@@ -405,13 +405,10 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
     lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
 
     Dim srcIdx(1 To 16) As Long
-    Dim oc As Long, c As Long, hb As String, ho As String
+    Dim oc As Long, c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
     For oc = 1 To nCols
-        ho = NormStr(CStr(outHdr(oc - 1)))
-        For c = 1 To lastC
-            hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-            If hb = ho Then srcIdx(oc) = c : Exit For
-        Next c
+        srcIdx(oc) = ColIdx(mapa, NormStr(CStr(outHdr(oc - 1))))
     Next oc
 
     Dim refCol As Long : refCol = srcIdx(5)
@@ -1267,19 +1264,15 @@ Private Sub ProcessarCOMInventario(wsBase As Worksheet, wsCom As Worksheet)
     Dim colPEP3 As Long, colPEP4 As Long, colMat As Long
     Dim colDescM As Long, colQtd As Long, colUML As Long
     Dim colTipo As Long, colPEP3n As Long
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case h
-            Case "PEP3NIVEL":   colPEP3 = c
-            Case "PEP4NIVEL":   colPEP4 = c
-            Case "COD MAT":     colMat  = c
-            Case "DESC MAT":    colDescM = c
-            Case "MAT LIB SAP": colQtd  = c
-            Case "UND":         colUML  = c
-            Case "TIPO":        colTipo = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    colPEP3  = ColIdx(mapa, "PEP3NIVEL")
+    colPEP4  = ColIdx(mapa, "PEP4NIVEL")
+    colMat   = ColIdx(mapa, "COD MAT")
+    colDescM = ColIdx(mapa, "DESC MAT")
+    colQtd   = ColIdx(mapa, "MAT LIB SAP")
+    colUML   = ColIdx(mapa, "UND")
+    colTipo  = ColIdx(mapa, "TIPO")
     If colPEP4 = 0 Then colPEP4 = 2
     If colMat  = 0 Then colMat  = 5
     If colDescM= 0 Then colDescM= 7
@@ -1675,21 +1668,17 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim idxPep3 As Long, idxPep4 As Long, idxCod As Long, idxDesc As Long
     Dim idxFam As Long, idxTipo As Long, idxValor As Long, idxQtd As Long, idxTipoPep As Long
-    Dim c As Long, hb As String
-    For c = 1 To lastC
-        hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case hb
-            Case "PEP3NIVEL":   idxPep3 = c
-            Case "PEP4NIVEL":   idxPep4 = c
-            Case "COD MAT":     idxCod  = c
-            Case "DESC MAT":    idxDesc = c
-            Case "FAMILIA":     idxFam  = c
-            Case "TIPO":        idxTipo = c
-            Case "VALOR":       idxValor = c
-            Case "MAT LIB SAP": idxQtd  = c
-            Case "TIPO PEP":    idxTipoPep = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    idxPep3    = ColIdx(mapa, "PEP3NIVEL")
+    idxPep4    = ColIdx(mapa, "PEP4NIVEL")
+    idxCod     = ColIdx(mapa, "COD MAT")
+    idxDesc    = ColIdx(mapa, "DESC MAT")
+    idxFam     = ColIdx(mapa, "FAMILIA")
+    idxTipo    = ColIdx(mapa, "TIPO")
+    idxValor   = ColIdx(mapa, "VALOR")
+    idxQtd     = ColIdx(mapa, "MAT LIB SAP")
+    idxTipoPep = ColIdx(mapa, "TIPO PEP")
 
     Dim hdrs As Variant
     hdrs = Array("TIPO ALERTA","PEP3NIVEL","PEP4NIVEL","COD MAT","DESC MAT","FAMILIA","VALOR","QTD","PRECO UNIT","REFERENCIA","MOTIVO")
@@ -2288,22 +2277,18 @@ Private Sub ProcessarPrecoUnitario(wsBase As Worksheet, ws As Worksheet)
     Dim iPep3 As Long, iPep4 As Long, iCod As Long, iDesc As Long
     Dim iFam As Long, iTipo As Long, iVal As Long, iQtd As Long, iUml As Long
     Dim iTipoPep As Long
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case h
-            Case "PEP3NIVEL":   iPep3 = c
-            Case "PEP4NIVEL":   iPep4 = c
-            Case "COD MAT":     iCod = c
-            Case "DESC MAT":    iDesc = c
-            Case "FAMILIA":     iFam = c
-            Case "TIPO":        iTipo = c
-            Case "VALOR":       iVal = c
-            Case "MAT LIB SAP": iQtd = c
-            Case "UND":         iUml = c
-            Case "TIPO PEP":    iTipoPep = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    iPep3    = ColIdx(mapa, "PEP3NIVEL")
+    iPep4    = ColIdx(mapa, "PEP4NIVEL")
+    iCod     = ColIdx(mapa, "COD MAT")
+    iDesc    = ColIdx(mapa, "DESC MAT")
+    iFam     = ColIdx(mapa, "FAMILIA")
+    iTipo    = ColIdx(mapa, "TIPO")
+    iVal     = ColIdx(mapa, "VALOR")
+    iQtd     = ColIdx(mapa, "MAT LIB SAP")
+    iUml     = ColIdx(mapa, "UND")
+    iTipoPep = ColIdx(mapa, "TIPO PEP")
 
     ' Cabecalho
     Dim hdrs As Variant
@@ -3413,18 +3398,46 @@ Private Sub GravarLog(wb As Workbook)
     On Error GoTo 0
 End Sub
 
+' --------- Mapa de colunas da base: fonte UNICA do "onde esta cada coluna" ---------
+' Devolve um dicionario NOME NORMALIZADO -> indice da coluna, lendo a linha de
+' cabecalho em UM unico acesso a planilha. Antes, cada procedure repetia o seu
+' proprio "For c = 1 To lastC / Select Case", com nomes de variavel diferentes:
+' renomear uma coluna na extracao obrigava a editar todos os pontos.
+' Cabecalho repetido: vence a primeira ocorrencia.
+Private Function MapaColunas(wsBase As Worksheet) As Object
+    Dim m As Object : Set m = CreateObject("Scripting.Dictionary")
+    Dim lastC As Long
+    lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
+    If lastC >= 1 Then
+        Dim hd As Variant
+        If lastC = 1 Then
+            ReDim hd(1 To 1, 1 To 1)
+            hd(1, 1) = wsBase.Cells(1, 1).Value
+        Else
+            hd = wsBase.Range(wsBase.Cells(1, 1), wsBase.Cells(1, lastC)).Value
+        End If
+        Dim c As Long, h As String
+        For c = 1 To lastC
+            h = NormStr(CStr(hd(1, c)))
+            If h <> "" And Not m.Exists(h) Then m.Add h, c
+        Next c
+    End If
+    Set MapaColunas = m
+End Function
+
+' Indice da coluna pelo nome; 0 quando a coluna nao existe na base (os chamadores
+' ja tratam 0 como "coluna ausente").
+Private Function ColIdx(mapa As Object, nome As String) As Long
+    If mapa Is Nothing Then Exit Function
+    If mapa.Exists(nome) Then ColIdx = mapa(nome)
+End Function
+
 ' --------- Validacao da base: lista todas as colunas obrigatorias ausentes ---------
 Private Function ValidarBase(wsBase As Worksheet) As String
     Dim req As Variant
     req = Array("PEP3NIVEL", "PEP4NIVEL", "COD MAT", "VALOR", "FAMILIA", "TIPO", _
                 "SIT MAT", "MAT LIB SAP", "MAT PRJ CAD")
-    Dim have As Object : Set have = CreateObject("Scripting.Dictionary")
-    Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        If h <> "" And Not have.Exists(h) Then have.Add h, True
-    Next c
+    Dim have As Object : Set have = MapaColunas(wsBase)
     Dim falta As String, i As Long
     For i = 0 To UBound(req)
         If Not have.Exists(CStr(req(i))) Then falta = falta & IIf(falta <> "", ", ", "") & req(i)
@@ -3659,22 +3672,18 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim iPep3 As Long, iPep4 As Long, iCod As Long, iFam As Long, iTipo As Long
     Dim iValor As Long, iLib As Long, iPrj As Long, iTipoPep As Long, iUnd As Long
-    Dim c As Long, hb As String
-    For c = 1 To lastC
-        hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case hb
-            Case "PEP3NIVEL":   iPep3 = c
-            Case "PEP4NIVEL":   iPep4 = c
-            Case "COD MAT":     iCod = c
-            Case "FAMILIA":     iFam = c
-            Case "TIPO":        iTipo = c
-            Case "VALOR":       iValor = c
-            Case "MAT LIB SAP": iLib = c
-            Case "MAT PRJ CAD": iPrj = c
-            Case "TIPO PEP":    iTipoPep = c
-            Case "UND":         iUnd = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    iPep3    = ColIdx(mapa, "PEP3NIVEL")
+    iPep4    = ColIdx(mapa, "PEP4NIVEL")
+    iCod     = ColIdx(mapa, "COD MAT")
+    iFam     = ColIdx(mapa, "FAMILIA")
+    iTipo    = ColIdx(mapa, "TIPO")
+    iValor   = ColIdx(mapa, "VALOR")
+    iLib     = ColIdx(mapa, "MAT LIB SAP")
+    iPrj     = ColIdx(mapa, "MAT PRJ CAD")
+    iTipoPep = ColIdx(mapa, "TIPO PEP")
+    iUnd     = ColIdx(mapa, "UND")
 
     Dim refCol As Long : refCol = iPep4 : If refCol = 0 Then refCol = 1
     Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, refCol).End(xlUp).Row
@@ -3737,7 +3746,9 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Next i
 
     ' ---- monta as verificacoes (nome, resultado, status, recomendacao) ----
-    Dim chk(1 To 12, 1 To 4) As String
+    ' folga proposital: DiagAdd ignora verificacoes acima deste limite em vez
+    ' de derrubar a macro com "Subscript out of range" no meio da geracao
+    Dim chk(1 To 32, 1 To 4) As String
     Dim nChk As Long, nCrit As Long, nAten As Long
 
     DiagAdd chk, nChk, nCrit, nAten, "Volume da base", _
@@ -3984,6 +3995,9 @@ End Sub
 Private Sub DiagAdd(chk() As String, ByRef nChk As Long, ByRef nCrit As Long, _
                     ByRef nAten As Long, nome As String, resultado As String, _
                     status As String, recom As String)
+    ' guarda de limite: sem isto, a 1a verificacao alem do tamanho de chk()
+    ' derrubaria GerarInventario com erro 9 em tempo de execucao
+    If nChk >= UBound(chk, 1) Then Exit Sub
     nChk = nChk + 1
     chk(nChk, 1) = nome : chk(nChk, 2) = resultado
     chk(nChk, 3) = status : chk(nChk, 4) = recom
