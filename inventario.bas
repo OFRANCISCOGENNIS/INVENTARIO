@@ -3066,7 +3066,11 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
         For r = 1 To UBound(aa, 1)
             Dim tA As String : tA = Trim(CStr(aa(r, 1)))
             ' ignora a linha informativa "Nenhum alerta..." da aba sem apontamentos
-            If tA <> "" And InStr(UCase(tA), "NENHUM ALERTA") = 0 Then
+            ' e os apontamentos QUALIDADE DA BASE, que sao replicas do
+            ' DIAGNOSTICO DA BASE e ja tem indicador proprio (nota de saude):
+            ' conta-los aqui inflaria o KPI de alertas por obra.
+            If tA <> "" And InStr(UCase(tA), "NENHUM ALERTA") = 0 _
+               And InStr(UCase(tA), "QUALIDADE DA BASE") = 0 Then
                 nAlertas = nAlertas + 1
                 If tipos.Exists(tA) Then tipos(tA) = tipos(tA) + 1 Else tipos.Add tA, 1
             End If
@@ -3873,7 +3877,7 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     ws.Columns(3).ColumnWidth = 12 : ws.Columns(4).ColumnWidth = 78
     ws.Tab.Color = corSaude
 
-    ' Replica os apontamentos ATENCAO na aba ALERTA CRITICO
+    ' Replica os apontamentos CRITICO/ATENCAO na aba ALERTA CRITICO
     AnexarAtencoesAlerta wb, chk, nChk
 
     On Error Resume Next
@@ -3884,7 +3888,8 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
 End Sub
 
 ' Copia para a aba ALERTA CRITICO as verificacoes do DIAGNOSTICO DA BASE que
-' ficaram com status ATENCAO, como um bloco no fim da lista de alertas.
+' ficaram com status CRITICO ou ATENCAO, como um bloco no fim da lista de
+' alertas (os CRITICO primeiro).
 ' Roda depois de ProcessarAlertaCritico, entao a aba ja esta montada:
 ' linhas 1-2 = banda de titulo, linha 3 = cabecalho, linha 4+ = dados.
 Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
@@ -3894,11 +3899,12 @@ Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
     On Error GoTo 0
     If wsA Is Nothing Then Exit Sub
 
-    Dim i As Long, nAt As Long
+    Dim i As Long, nAt As Long, nCr As Long
     For i = 1 To nChk
+        If chk(i, 3) = "CRITICO" Then nCr = nCr + 1
         If chk(i, 3) = "ATENCAO" Then nAt = nAt + 1
     Next i
-    If nAt = 0 Then Exit Sub
+    If nCr + nAt = 0 Then Exit Sub
 
     Dim lastA As Long : lastA = wsA.Cells(wsA.Rows.Count, 1).End(xlUp).Row
     If lastA < 3 Then lastA = 3
@@ -3913,36 +3919,52 @@ Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
     End If
 
     ' 1 TIPO | 5 DESC MAT = verificacao | 10 REFERENCIA = resultado | 11 MOTIVO
-    Dim outA() As Variant : ReDim outA(1 To nAt, 1 To 11)
+    Dim nTot As Long : nTot = nCr + nAt
+    Dim outA() As Variant : ReDim outA(1 To nTot, 1 To 11)
     Dim k As Long
-    For i = 1 To nChk
-        If chk(i, 3) = "ATENCAO" Then
-            k = k + 1
-            outA(k, 1) = "QUALIDADE DA BASE"
-            outA(k, 5) = chk(i, 1)
-            outA(k, 10) = chk(i, 2)
-            outA(k, 11) = chk(i, 4)
-        End If
-    Next i
+    Dim passe As Long, alvo As String
+    For passe = 1 To 2
+        alvo = IIf(passe = 1, "CRITICO", "ATENCAO")
+        For i = 1 To nChk
+            If chk(i, 3) = alvo Then
+                k = k + 1
+                outA(k, 1) = IIf(passe = 1, "QUALIDADE DA BASE - CRITICO", "QUALIDADE DA BASE")
+                outA(k, 5) = chk(i, 1)
+                outA(k, 10) = chk(i, 2)
+                outA(k, 11) = chk(i, 4)
+            End If
+        Next i
+    Next passe
 
     Dim r1 As Long : r1 = lastA + 1
-    Dim r2 As Long : r2 = lastA + nAt
+    Dim r2 As Long : r2 = lastA + nTot
     wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11)).Value = outA
 
     With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11))
         .Font.Name = "Segoe UI" : .Font.Size = 10 : .Font.Color = RGB(45, 52, 64)
         .VerticalAlignment = xlCenter
-        .Interior.Color = RGB(255, 244, 214)
         .Borders(xlInsideHorizontal).LineStyle = xlContinuous
         .Borders(xlInsideHorizontal).Color = RGB(255, 255, 255)
         .Borders(xlEdgeBottom).LineStyle = xlContinuous
         .Borders(xlEdgeBottom).Color = RGB(255, 255, 255)
     End With
-    With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 1))
-        .Interior.Color = RGB(176, 124, 0)
-        .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
-        .HorizontalAlignment = xlCenter
-    End With
+    ' bloco CRITICO em vermelho, bloco ATENCAO em ambar
+    If nCr > 0 Then
+        wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r1 + nCr - 1, 11)).Interior.Color = RGB(252, 226, 228)
+        With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r1 + nCr - 1, 1))
+            .Interior.Color = RGB(192, 0, 0)
+            .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
+            .HorizontalAlignment = xlCenter
+        End With
+    End If
+    If nAt > 0 Then
+        wsA.Range(wsA.Cells(r1 + nCr, 1), wsA.Cells(r2, 11)).Interior.Color = RGB(255, 244, 214)
+        With wsA.Range(wsA.Cells(r1 + nCr, 1), wsA.Cells(r2, 1))
+            .Interior.Color = RGB(176, 124, 0)
+            .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
+            .HorizontalAlignment = xlCenter
+        End With
+    End If
     wsA.Range(wsA.Cells(r1, 5), wsA.Cells(r2, 5)).HorizontalAlignment = xlLeft
     wsA.Range(wsA.Cells(r1, 10), wsA.Cells(r2, 11)).HorizontalAlignment = xlLeft
     Dim rr As Long
