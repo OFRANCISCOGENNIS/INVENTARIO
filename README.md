@@ -16,6 +16,21 @@ Colar código longo diretamente na janela de código do VBE pode truncar linhas
 (inclusive linhas `Dim`), o que produz o erro de compilação
 `Variável não definida`. Sempre use Importar.
 
+## Abas persistentes
+
+A macro apaga e recria as abas de análise a cada execução, mas estas **não** entram
+nessa lista e acumulam histórico entre rodadas:
+
+- `HISTORICO` — uma linha por obra por execução (situação e se mudou)
+- `HISTORICO KPI` — oculta; um registro agregado por execução (PEPs, reprovados,
+  alertas, divergências, valor em risco, nota da base). É a fonte do
+  "vs. execução anterior" nos cards do PAINEL DO GESTOR
+- `CONFIG` — parâmetros editáveis
+- `LOG EXECUCAO` — oculta; log da última rodada
+
+Apagar `HISTORICO KPI` não quebra nada: a próxima execução recria a aba e os cards
+apenas ficam sem a linha de variação até haver duas rodadas registradas.
+
 ## Referências exigidas
 
 O módulo usa constantes `mso*` (`msoShapeRoundedRectangle`, `msoTrue`,

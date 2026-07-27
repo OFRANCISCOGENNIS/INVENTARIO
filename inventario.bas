@@ -26,6 +26,11 @@ Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
 Private mAlBuf() As Variant
 Private mAlCap As Long
 
+' Aba oculta com um registro de KPIs por execucao (base do "vs. execucao
+' anterior" nos cards do PAINEL DO GESTOR). Nao entra na lista de abas
+' recriadas a cada rodada, senao o historico se perderia.
+Private Const ABA_KPI As String = "HISTORICO KPI"
+
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
 ' exibicao de SIT MAT/APROVACAO/MOTIVO (loop 2) em ProcessarSAPxPRJ.
@@ -2044,22 +2049,7 @@ Finaliza2:
                 iA = iA + 1
             Loop
             Dim bgA As Long, chip As Long
-            Select Case tA
-                Case "ODI SEM UC":                bgA = RGB(255, 244, 214) : chip = RGB(214, 158, 0)
-                Case "PEP SEM UC":                bgA = RGB(255, 238, 230) : chip = RGB(196, 89, 17)
-                Case "ODI SEM COM":               bgA = RGB(230, 240, 248) : chip = RGB(46, 117, 182)
-                Case "PU ABAIXO MIN":             bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
-                Case "PU ACIMA MAX":              bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "MATERIAL NEGATIVO":         bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "MATERIAL POSITIVO EM ODD":  bgA = RGB(252, 233, 219) : chip = RGB(214, 99, 0)
-                Case "LACRE x MEDIDOR":           bgA = RGB(225, 223, 245) : chip = RGB(96, 64, 196)
-                Case "POSTE EM PEP .M":           bgA = RGB(222, 236, 250) : chip = RGB(31, 107, 183)
-                Case "POSTE EM PEP .S":           bgA = RGB(220, 245, 240) : chip = RGB(15, 130, 115)
-                Case "UC SUBVALORIZADO":          bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "UC - PRECO NAO ENCONTRADO": bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
-                Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
-                Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
-            End Select
+            CoresAlerta tA, bgA, chip
             ws.Range(ws.Cells(1 + iIni, 1), ws.Cells(1 + iA, 11)).Interior.Color = bgA
             ' "chip" colorido do tipo de alerta (col 1)
             With ws.Range(ws.Cells(1 + iIni, 1), ws.Cells(1 + iA, 1))
@@ -2071,8 +2061,59 @@ Finaliza2:
         Loop
     End If
 
-    ' --- Banda de titulo no topo (insere 2 linhas) ---
-    ws.Range("1:2").Insert Shift:=xlDown
+    ' --- Resumo por tipo: contagem e primeira linha de cada tipo ---
+    ' Os tipos se intercalam na lista (o loop principal emite varios tipos por
+    ' linha da base), entao a contagem vai por dicionario, e nao pelos blocos
+    ' contiguos usados na pintura acima.
+    Dim tpNome() As String, tpQtd() As Long, tpLin() As Long, nTp As Long
+    If totAl > 0 Then
+        Dim dCnt As Object : Set dCnt = CreateObject("Scripting.Dictionary")
+        Dim dFst As Object : Set dFst = CreateObject("Scripting.Dictionary")
+        Dim rS As Long, tS As String
+        For rS = 1 To totAl
+            tS = Trim(CStr(dA(rS, 1)))
+            If tS <> "" Then
+                If dCnt.Exists(tS) Then
+                    dCnt(tS) = dCnt(tS) + 1
+                Else
+                    dCnt.Add tS, 1
+                    dFst.Add tS, 1 + rS      ' linha na planilha ANTES da insercao do topo
+                End If
+            End If
+        Next rS
+        nTp = dCnt.Count
+        If nTp > 0 Then
+            ReDim tpNome(1 To nTp) : ReDim tpQtd(1 To nTp) : ReDim tpLin(1 To nTp)
+            Dim kS As Variant, ixS As Long : ixS = 0
+            For Each kS In dCnt.Keys
+                ixS = ixS + 1
+                tpNome(ixS) = CStr(kS) : tpQtd(ixS) = dCnt(kS) : tpLin(ixS) = dFst(kS)
+            Next kS
+            ' ordena por quantidade desc (selection sort: no maximo ~15 tipos)
+            Dim aS As Long, bS As Long, mS As Long
+            For aS = 1 To nTp - 1
+                mS = aS
+                For bS = aS + 1 To nTp
+                    If tpQtd(bS) > tpQtd(mS) Then mS = bS
+                Next bS
+                If mS <> aS Then
+                    Dim swN As String, swQ As Long, swL As Long
+                    swN = tpNome(aS) : tpNome(aS) = tpNome(mS) : tpNome(mS) = swN
+                    swQ = tpQtd(aS) : tpQtd(aS) = tpQtd(mS) : tpQtd(mS) = swQ
+                    swL = tpLin(aS) : tpLin(aS) = tpLin(mS) : tpLin(mS) = swL
+                End If
+            Next aS
+        End If
+    End If
+
+    ' --- Banda de titulo + resumo no topo ---
+    ' Linhas inseridas: 2 de titulo + N de chips + 1 de respiro. Como a altura
+    ' varia, quem le esta aba usa PrimeiraLinhaAlerta em vez de linha fixa.
+    Dim nLinSum As Long, nIns As Long
+    If nTp > 0 Then nLinSum = -Int(-nTp / 3)          ' teto da divisao por 3
+    If nTp > 0 Then nIns = 2 + nLinSum + 1 Else nIns = 2
+    ws.Range("1:" & nIns).Insert Shift:=xlDown
+
     With ws.Range("A1:K2")
         .Merge
         .Value = ChrW(&H26A0) & "  PAINEL DE ALERTAS CRITICOS"
@@ -2082,25 +2123,102 @@ Finaliza2:
     End With
     ws.Rows(1).RowHeight = 22 : ws.Rows(2).RowHeight = 22
 
+    If nTp > 0 Then
+        Dim cIni As Variant : cIni = Array(1, 4, 7)
+        Dim cFim As Variant : cFim = Array(3, 6, 11)
+        Dim t As Long
+        For t = 1 To nTp
+            Dim rowCh As Long : rowCh = 3 + Int((t - 1) / 3)
+            Dim slot As Long : slot = (t - 1) Mod 3
+            Dim bgS As Long, chS As Long
+            CoresAlerta tpNome(t), bgS, chS
+            With ws.Range(ws.Cells(rowCh, cIni(slot)), ws.Cells(rowCh, cFim(slot)))
+                .Merge
+                .Value = tpNome(t) & "   " & ChrW(&H2022) & "   " & Format(tpQtd(t), "#,##0")
+                .Interior.Color = chS
+                .Font.Name = "Segoe UI Semibold" : .Font.Size = 10 : .Font.Bold = True
+                .Font.Color = RGB(255, 255, 255)
+                .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            End With
+            ' atalho para o primeiro apontamento do tipo (os blocos sao pintados
+            ' por tipo, entao cair na primeira linha ja mostra o grupo)
+            On Error Resume Next
+            ws.Hyperlinks.Add Anchor:=ws.Cells(rowCh, cIni(slot)), Address:="", _
+                SubAddress:="'" & ws.Name & "'!A" & (tpLin(t) + nIns), _
+                ScreenTip:="Ir para o primeiro: " & tpNome(t)
+            On Error GoTo 0
+            ' Hyperlinks.Add repinta a celula com o estilo de link
+            With ws.Cells(rowCh, cIni(slot)).Font
+                .Name = "Segoe UI Semibold" : .Size = 10 : .Bold = True
+                .Color = RGB(255, 255, 255) : .Underline = xlUnderlineStyleNone
+            End With
+            ws.Rows(rowCh).RowHeight = 20
+        Next t
+        ws.Rows(3 + nLinSum).RowHeight = 6      ' respiro antes do cabecalho
+    End If
+
+    Dim rHdr As Long : rHdr = nIns + 1
     If totAl = 0 Then
-        ws.Cells(4, 1).Value = "Nenhum alerta critico encontrado nesta base."
-        ws.Cells(4, 1).Font.Italic = True : ws.Cells(4, 1).Font.Color = RGB(0, 128, 0)
+        ws.Cells(rHdr + 1, 1).Value = "Nenhum alerta critico encontrado nesta base."
+        ws.Cells(rHdr + 1, 1).Font.Italic = True
+        ws.Cells(rHdr + 1, 1).Font.Color = RGB(0, 128, 0)
     Else
-        ws.Range(ws.Cells(3, 1), ws.Cells(3, 11)).AutoFilter
+        ws.Range(ws.Cells(rHdr, 1), ws.Cells(rHdr, 11)).AutoFilter
     End If
 
     On Error Resume Next
     ws.Activate
     ActiveWindow.DisplayGridlines = False
-    ws.Range("A4").Select
+    ws.Range("A" & (rHdr + 1)).Select
     ActiveWindow.FreezePanes = True
     On Error GoTo 0
     ws.Range("A1").Select
 End Sub
 
+' Paleta por tipo de alerta: cor de fundo da linha e cor do "chip" da coluna 1.
+' Fonte unica, usada tanto na pintura das linhas quanto nos chips do resumo.
+Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As Long)
+    Select Case tipo
+        Case "ODI SEM UC":                bgA = RGB(255, 244, 214) : chip = RGB(214, 158, 0)
+        Case "PEP SEM UC":                bgA = RGB(255, 238, 230) : chip = RGB(196, 89, 17)
+        Case "ODI SEM COM":               bgA = RGB(230, 240, 248) : chip = RGB(46, 117, 182)
+        Case "PU ABAIXO MIN":             bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
+        Case "PU ACIMA MAX":              bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "MATERIAL NEGATIVO":         bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "MATERIAL POSITIVO EM ODD":  bgA = RGB(252, 233, 219) : chip = RGB(214, 99, 0)
+        Case "LACRE x MEDIDOR":           bgA = RGB(225, 223, 245) : chip = RGB(96, 64, 196)
+        Case "POSTE EM PEP .M":           bgA = RGB(222, 236, 250) : chip = RGB(31, 107, 183)
+        Case "POSTE EM PEP .S":           bgA = RGB(220, 245, 240) : chip = RGB(15, 130, 115)
+        Case "UC SUBVALORIZADO":          bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "UC - PRECO NAO ENCONTRADO": bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
+        Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
+        Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
+    End Select
+End Sub
+
+' Primeira linha de DADOS da aba ALERTA CRITICO. O topo tem banda de titulo e,
+' quando ha apontamentos, um resumo por tipo de altura variavel - por isso a
+' linha do cabecalho nao pode ser fixa. Procura a linha cujo A = "TIPO ALERTA".
+Private Function PrimeiraLinhaAlerta(wsA As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 40
+        If NormStr(CStr(wsA.Cells(r, 1).Value)) = "TIPO ALERTA" Then
+            PrimeiraLinhaAlerta = r + 1
+            Exit Function
+        End If
+    Next r
+    PrimeiraLinhaAlerta = 4      ' layout anterior ao resumo, como reserva
+End Function
+
 ' Escreve uma celula de alerta no buffer (substitui ws.Cells(outRow, c).Value =).
 ' Cresce o buffer sob demanda; outRow comeca em 2 (linha 1 = cabecalho).
 Private Sub AlertaCel(outRow As Long, c As Long, v As Variant)
+    ' buffer ainda nao alocado (chamada fora da ordem esperada): aloca em vez
+    ' de estourar no ReDim Preserve com mAlCap = 0, que faria laco infinito
+    If mAlCap < 1 Then
+        mAlCap = 256
+        ReDim mAlBuf(1 To 11, 1 To mAlCap)
+    End If
     Do While outRow - 1 > mAlCap
         mAlCap = mAlCap * 2
         ReDim Preserve mAlBuf(1 To 11, 1 To mAlCap)
@@ -2494,10 +2612,11 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
         Next r
     End If
 
-    ' 2) ALERTA CRITICO (dados a partir da linha 4, col 2 = PEP3) - leitura em array
+    ' 2) ALERTA CRITICO (col 2 = PEP3) - leitura em array
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsAlertaC)
     Dim lastA As Long : lastA = wsAlertaC.Cells(wsAlertaC.Rows.Count, 1).End(xlUp).Row
-    If lastA >= 4 Then
-        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(4, 1), wsAlertaC.Cells(lastA, 2)).Value
+    If lastA >= r0A Then
+        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(r0A, 1), wsAlertaC.Cells(lastA, 2)).Value
         For r = 1 To UBound(aa, 1)
             p3 = Trim(CStr(aa(r, 2)))
             If p3 <> "" Then
@@ -2899,7 +3018,15 @@ Private Sub AplicarDesignGlobal(wb As Workbook)
     End If
 
     ' ---- 2) contadores dinamicos nos titulos ----
-    AppendContagem wb, "ALERTA CRITICO", 4, " apontamento(s)"
+    ' ALERTA CRITICO tem topo de altura variavel (resumo por tipo): pergunta
+    ' onde os dados comecam em vez de assumir a linha 4.
+    Dim wsAC As Worksheet
+    On Error Resume Next
+    Set wsAC = wb.Worksheets("ALERTA CRITICO")
+    On Error GoTo 0
+    If Not wsAC Is Nothing Then
+        AppendContagem wb, "ALERTA CRITICO", PrimeiraLinhaAlerta(wsAC), " apontamento(s)"
+    End If
     AppendContagem wb, "RANKING DE RISCO", 4, " obra(s)"
 
     Set ws = Nothing
@@ -2959,7 +3086,9 @@ Private Sub AplicarDesignGlobal(wb As Workbook)
                 Case "PAINEL DO GESTOR":   congRow = 0    ' sem congelamento
                 Case "ANALISE SAP x PRJ":  congRow = 11   ' dados comecam na 11
                 Case "RACIONALIZACAO COM": congRow = 4
-                Case Else:                 congRow = 5    ' PRECOS, ALERTAS, RANKING
+                ' +1: a barra de navegacao empurra tudo uma linha para baixo
+                Case "ALERTA CRITICO":     congRow = PrimeiraLinhaAlerta(ws) + 1
+                Case Else:                 congRow = 5    ' PRECOS, RANKING
             End Select
             InserirBarraNav ws, nomes, rots, CStr(nomes(i)), congRow
         End If
@@ -3043,11 +3172,12 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
     Next k
     nAprov = nPep3 - nReprov
 
-    ' Alertas criticos (le ALERTA CRITICO, dados a partir da linha 4) + ranking por tipo
+    ' Alertas criticos (le ALERTA CRITICO) + ranking por tipo
     Dim tipos As Object : Set tipos = CreateObject("Scripting.Dictionary")
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsAlertaC)
     Dim lastA As Long : lastA = wsAlertaC.Cells(wsAlertaC.Rows.Count, 1).End(xlUp).Row
-    If lastA >= 4 Then
-        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(4, 1), wsAlertaC.Cells(lastA, 2)).Value
+    If lastA >= r0A Then
+        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(r0A, 1), wsAlertaC.Cells(lastA, 2)).Value
         For r = 1 To UBound(aa, 1)
             Dim tA As String : tA = Trim(CStr(aa(r, 1)))
             ' ignora a linha informativa "Nenhum alerta..." da aba sem apontamentos
@@ -3103,14 +3233,26 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
     End With
     ws.Rows(2).RowHeight = 20
 
+    ' --- variacao vs. execucao anterior (aba HISTORICO KPI) ---
+    ' Lido ANTES de registrar esta rodada, senao a comparacao seria consigo mesma.
+    Dim kAnt As Variant : kAnt = LerUltimoKpiRun(wb)
+    Dim dTxt(1 To 4) As String, dCor(1 To 4) As Long
+    Dim temAnt As Boolean : temAnt = Not IsEmpty(kAnt)
+    If temAnt Then
+        dTxt(1) = TxtDelta(nPep3, kAnt(1), False, dCor(1))
+        dTxt(2) = TxtDelta(nReprov, kAnt(2), True, dCor(2))
+        dTxt(3) = TxtDelta(nAlertas, kAnt(3), True, dCor(3))
+        dTxt(4) = TxtDelta(nDiverg, kAnt(4), True, dCor(4))
+    End If
+
     ' --- KPI cards (linha 1 de cards: 4) ---
     CardGestor ws, 4, 1, "Valor total da obra", FmtKPI(valTot), RGB(255, 255, 255), RGB(17, 24, 39)
-    CardGestor ws, 4, 3, "PEPs analisados", Format(nPep3, "#,##0"), RGB(255, 255, 255), RGB(17, 24, 39)
+    CardGestor ws, 4, 3, "PEPs analisados", Format(nPep3, "#,##0"), RGB(255, 255, 255), RGB(17, 24, 39), dTxt(1), dCor(1)
     CardGestor ws, 4, 5, "PEPs aprovados", Format(nAprov, "#,##0") & "  (" & Format(pctAprov, "0") & "%)", RGB(231, 247, 237), RGB(21, 115, 71)
-    CardGestor ws, 4, 7, "PEPs reprovados", Format(nReprov, "#,##0"), RGB(252, 232, 233), RGB(192, 0, 0)
+    CardGestor ws, 4, 7, "PEPs reprovados", Format(nReprov, "#,##0"), RGB(252, 232, 233), RGB(192, 0, 0), dTxt(2), dCor(2)
     ' --- KPI cards (linha 2 de cards: 4) ---
-    CardGestor ws, 8, 1, "Alertas criticos", Format(nAlertas, "#,##0"), RGB(255, 248, 230), RGB(176, 124, 0)
-    CardGestor ws, 8, 3, "Divergencias de preco", Format(nDiverg, "#,##0"), RGB(234, 242, 250), RGB(31, 78, 121)
+    CardGestor ws, 8, 1, "Alertas criticos", Format(nAlertas, "#,##0"), RGB(255, 248, 230), RGB(176, 124, 0), dTxt(3), dCor(3)
+    CardGestor ws, 8, 3, "Divergencias de preco", Format(nDiverg, "#,##0"), RGB(234, 242, 250), RGB(31, 78, 121), dTxt(4), dCor(4)
     CardGestor ws, 8, 5, "Sobrepreco potencial", FmtKPI(sobrepreco), RGB(252, 232, 233), RGB(192, 0, 0)
     CardGestor ws, 8, 7, "Valor em risco (reprov.)", FmtKPI(valRisk), RGB(252, 232, 233), RGB(192, 0, 0)
 
@@ -3194,6 +3336,17 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
         Next a
     End If
 
+    ' Nota de saude da base (DIAGNOSTICO BASE ja rodou nesta altura)
+    Dim notaB As Double
+    Dim wsDg As Worksheet
+    On Error Resume Next
+    Set wsDg = wb.Worksheets("DIAGNOSTICO BASE")
+    If Not wsDg Is Nothing Then notaB = Val0(wsDg.Range("A5").Value)
+    On Error GoTo 0
+
+    ' Fecha a rodada no historico de KPIs (a proxima execucao compara com esta)
+    RegistrarKpiRun wb, nPep3, nReprov, nAlertas, nDiverg, valRisk, notaB
+
     ' Aparencia geral
     On Error Resume Next
     ws.Activate
@@ -3206,8 +3359,12 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
 End Function
 
 ' Desenha um cartao de KPI ocupando 2 colunas x 3 linhas (label + valor grande)
+' Card de KPI. Com 'delta' preenchido, a 3a linha do card deixa de fazer parte
+' do valor e vira o rodape de variacao vs. execucao anterior - a altura total
+' do card nao muda, entao o layout do painel continua o mesmo.
 Private Sub CardGestor(ws As Worksheet, ByVal topRow As Long, ByVal leftCol As Long, _
-        titulo As String, valor As String, corFundo As Long, corValor As Long)
+        titulo As String, valor As String, corFundo As Long, corValor As Long, _
+        Optional ByVal delta As String = "", Optional ByVal corDelta As Long = 0)
     With ws.Range(ws.Cells(topRow, leftCol), ws.Cells(topRow + 2, leftCol + 1))
         .Interior.Color = corFundo
         .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(222, 226, 232)
@@ -3218,12 +3375,27 @@ Private Sub CardGestor(ws As Worksheet, ByVal topRow As Long, ByVal leftCol As L
         .Font.Color = RGB(110, 118, 130)
         .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
     End With
-    With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 2, leftCol + 1))
-        .Merge : .Value = valor
-        .Font.Name = "Segoe UI" : .Font.Size = 19 : .Font.Bold = True
-        .Font.Color = corValor
-        .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
-    End With
+    If delta = "" Then
+        With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 2, leftCol + 1))
+            .Merge : .Value = valor
+            .Font.Name = "Segoe UI" : .Font.Size = 19 : .Font.Bold = True
+            .Font.Color = corValor
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+    Else
+        With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 1, leftCol + 1))
+            .Merge : .Value = valor
+            .Font.Name = "Segoe UI" : .Font.Size = 17 : .Font.Bold = True
+            .Font.Color = corValor
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+        With ws.Range(ws.Cells(topRow + 2, leftCol), ws.Cells(topRow + 2, leftCol + 1))
+            .Merge : .Value = delta
+            .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Bold = True
+            .Font.Color = corDelta
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+    End If
     ws.Rows(topRow).RowHeight = 18
     ws.Rows(topRow + 1).RowHeight = 22
     ws.Rows(topRow + 2).RowHeight = 18
@@ -3917,15 +4089,16 @@ Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
     Next i
     If nCr + nAt = 0 Then Exit Sub
 
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsA)
     Dim lastA As Long : lastA = wsA.Cells(wsA.Rows.Count, 1).End(xlUp).Row
-    If lastA < 3 Then lastA = 3
-    ' base sem alertas: a linha 4 traz so o texto informativo, que sai do lugar
-    If lastA = 4 Then
-        If InStr(UCase(CStr(wsA.Cells(4, 1).Value)), "NENHUM ALERTA") > 0 Then
-            wsA.Rows(4).ClearContents
-            wsA.Cells(4, 1).Font.Italic = False
-            wsA.Cells(4, 1).Font.Color = RGB(45, 52, 64)
-            lastA = 3
+    If lastA < r0A - 1 Then lastA = r0A - 1
+    ' base sem alertas: a 1a linha de dados traz so o texto informativo, que sai
+    If lastA = r0A Then
+        If InStr(UCase(CStr(wsA.Cells(r0A, 1).Value)), "NENHUM ALERTA") > 0 Then
+            wsA.Rows(r0A).ClearContents
+            wsA.Cells(r0A, 1).Font.Italic = False
+            wsA.Cells(r0A, 1).Font.Color = RGB(45, 52, 64)
+            lastA = r0A - 1
         End If
     End If
 
@@ -3987,7 +4160,7 @@ Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
     ' refaz o autofiltro para abranger as linhas acrescentadas
     On Error Resume Next
     If wsA.AutoFilterMode Then wsA.AutoFilterMode = False
-    wsA.Range(wsA.Cells(3, 1), wsA.Cells(r2, 11)).AutoFilter
+    wsA.Range(wsA.Cells(r0A - 1, 1), wsA.Cells(r2, 11)).AutoFilter
     On Error GoTo 0
 End Sub
 
@@ -4086,6 +4259,92 @@ Private Sub AtualizarHistorico(wb As Workbook)
     ws.Range(ws.Cells(base, 1), ws.Cells(base + UBound(d, 1) - 1, 5)).Value = out
     ws.Tab.Color = RGB(60, 60, 60)
 End Sub
+
+' --------- KPIs por execucao: base da comparacao "vs. execucao anterior" ---------
+' O HISTORICO existente guarda uma linha por OBRA; para os cards do painel e
+' preciso o agregado da RODADA, entao vai numa aba propria e oculta (ABA_KPI).
+
+' Ultima rodada registrada: array (1 To 6) = PEPs, reprovados, alertas,
+' divergencias, valor em risco, nota da base. Empty quando nao ha historico.
+Private Function LerUltimoKpiRun(wb As Workbook) As Variant
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(ABA_KPI)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Function
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastR < 2 Then Exit Function
+    Dim v(1 To 6) As Double, c As Long
+    For c = 1 To 6
+        v(c) = Val0(ws.Cells(lastR, c + 1).Value)
+    Next c
+    LerUltimoKpiRun = v
+End Function
+
+Private Sub RegistrarKpiRun(wb As Workbook, ByVal nPep3 As Long, ByVal nReprov As Long, _
+        ByVal nAlertas As Long, ByVal nDiverg As Long, ByVal valRisk As Double, _
+        ByVal nota As Double)
+    On Error Resume Next
+    Dim ws As Worksheet
+    Set ws = wb.Worksheets(ABA_KPI)
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = ABA_KPI
+        Dim h As Variant
+        h = Array("RUN", "PEPS", "REPROVADOS", "ALERTAS", "DIVERGENCIAS", _
+                  "VALOR EM RISCO", "NOTA BASE")
+        Dim c As Long
+        For c = 1 To 7
+            ws.Cells(1, c).Value = h(c - 1)
+        Next c
+        With ws.Range("A1:G1")
+            .Font.Bold = True
+            .Interior.Color = RGB(17, 24, 39) : .Font.Color = RGB(255, 255, 255)
+        End With
+        ws.Columns(1).ColumnWidth = 18
+        For c = 2 To 7
+            ws.Columns(c).ColumnWidth = 15
+        Next c
+    Else
+        ws.Visible = xlSheetVisible
+    End If
+    Dim r As Long : r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+    If r < 2 Then r = 2
+    ws.Cells(r, 1).Value = Format(Now, "dd/mm/yyyy hh:nn")
+    ws.Cells(r, 2).Value = nPep3
+    ws.Cells(r, 3).Value = nReprov
+    ws.Cells(r, 4).Value = nAlertas
+    ws.Cells(r, 5).Value = nDiverg
+    ws.Cells(r, 6).Value = valRisk
+    ws.Cells(r, 7).Value = nota
+    ws.Tab.Color = RGB(120, 120, 120)
+    ' sai da aba antes de oculta-la (a recem-criada fica ativa)
+    wb.Worksheets(1).Activate
+    ws.Visible = xlSheetHidden
+    On Error GoTo 0
+End Sub
+
+' Texto da variacao para o rodape do card. bomSeCai = True quando DIMINUIR e
+' o resultado desejado (alertas, reprovados, valor em risco...).
+' ByVal nos parametros de entrada: sem isso, passar um Long (nPep3, nAlertas...)
+' para um parametro Double ByRef daria "ByRef argument type mismatch".
+Private Function TxtDelta(ByVal atual As Double, ByVal ant As Variant, _
+        ByVal bomSeCai As Boolean, ByRef cor As Long, _
+        Optional ByVal moeda As Boolean = False) As String
+    cor = RGB(130, 138, 150)
+    If IsEmpty(ant) Then Exit Function
+    Dim dif As Double : dif = atual - CDbl(ant)
+    If Abs(dif) < 0.000001 Then
+        TxtDelta = ChrW(&H2022) & " sem variacao"
+        Exit Function
+    End If
+    Dim bom As Boolean
+    If dif < 0 Then bom = bomSeCai Else bom = Not bomSeCai
+    If bom Then cor = RGB(21, 115, 71) Else cor = RGB(192, 0, 0)
+    Dim v As String
+    If moeda Then v = FmtKPI(Abs(dif)) Else v = Format(Abs(dif), "#,##0")
+    TxtDelta = IIf(dif > 0, ChrW(&H25B2), ChrW(&H25BC)) & " " & v & " vs. anterior"
+End Function
 
 ' --------- Nomes definidos: referencia estavel para formulas do usuario ---------
 Private Sub CriarNomesDefinidos(wb As Workbook)
