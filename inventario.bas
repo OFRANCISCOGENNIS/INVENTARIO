@@ -3873,10 +3873,88 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     ws.Columns(3).ColumnWidth = 12 : ws.Columns(4).ColumnWidth = 78
     ws.Tab.Color = corSaude
 
+    ' Replica os apontamentos ATENCAO na aba ALERTA CRITICO
+    AnexarAtencoesAlerta wb, chk, nChk
+
     On Error Resume Next
     ws.Activate
     ActiveWindow.DisplayGridlines = False
     ws.Range("A1").Select
+    On Error GoTo 0
+End Sub
+
+' Copia para a aba ALERTA CRITICO as verificacoes do DIAGNOSTICO DA BASE que
+' ficaram com status ATENCAO, como um bloco no fim da lista de alertas.
+' Roda depois de ProcessarAlertaCritico, entao a aba ja esta montada:
+' linhas 1-2 = banda de titulo, linha 3 = cabecalho, linha 4+ = dados.
+Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
+    Dim wsA As Worksheet
+    On Error Resume Next
+    Set wsA = wb.Worksheets("ALERTA CRITICO")
+    On Error GoTo 0
+    If wsA Is Nothing Then Exit Sub
+
+    Dim i As Long, nAt As Long
+    For i = 1 To nChk
+        If chk(i, 3) = "ATENCAO" Then nAt = nAt + 1
+    Next i
+    If nAt = 0 Then Exit Sub
+
+    Dim lastA As Long : lastA = wsA.Cells(wsA.Rows.Count, 1).End(xlUp).Row
+    If lastA < 3 Then lastA = 3
+    ' base sem alertas: a linha 4 traz so o texto informativo, que sai do lugar
+    If lastA = 4 Then
+        If InStr(UCase(CStr(wsA.Cells(4, 1).Value)), "NENHUM ALERTA") > 0 Then
+            wsA.Rows(4).ClearContents
+            wsA.Cells(4, 1).Font.Italic = False
+            wsA.Cells(4, 1).Font.Color = RGB(45, 52, 64)
+            lastA = 3
+        End If
+    End If
+
+    ' 1 TIPO | 5 DESC MAT = verificacao | 10 REFERENCIA = resultado | 11 MOTIVO
+    Dim outA() As Variant : ReDim outA(1 To nAt, 1 To 11)
+    Dim k As Long
+    For i = 1 To nChk
+        If chk(i, 3) = "ATENCAO" Then
+            k = k + 1
+            outA(k, 1) = "QUALIDADE DA BASE"
+            outA(k, 5) = chk(i, 1)
+            outA(k, 10) = chk(i, 2)
+            outA(k, 11) = chk(i, 4)
+        End If
+    Next i
+
+    Dim r1 As Long : r1 = lastA + 1
+    Dim r2 As Long : r2 = lastA + nAt
+    wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11)).Value = outA
+
+    With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11))
+        .Font.Name = "Segoe UI" : .Font.Size = 10 : .Font.Color = RGB(45, 52, 64)
+        .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(255, 244, 214)
+        .Borders(xlInsideHorizontal).LineStyle = xlContinuous
+        .Borders(xlInsideHorizontal).Color = RGB(255, 255, 255)
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(255, 255, 255)
+    End With
+    With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 1))
+        .Interior.Color = RGB(176, 124, 0)
+        .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+    wsA.Range(wsA.Cells(r1, 5), wsA.Cells(r2, 5)).HorizontalAlignment = xlLeft
+    wsA.Range(wsA.Cells(r1, 10), wsA.Cells(r2, 11)).HorizontalAlignment = xlLeft
+    Dim rr As Long
+    For rr = r1 To r2
+        wsA.Rows(rr).RowHeight = 20
+    Next rr
+    If wsA.Columns(10).ColumnWidth < 24 Then wsA.Columns(10).ColumnWidth = 24
+
+    ' refaz o autofiltro para abranger as linhas acrescentadas
+    On Error Resume Next
+    If wsA.AutoFilterMode Then wsA.AutoFilterMode = False
+    wsA.Range(wsA.Cells(3, 1), wsA.Cells(r2, 11)).AutoFilter
     On Error GoTo 0
 End Sub
 
