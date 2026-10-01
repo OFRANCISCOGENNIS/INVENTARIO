@@ -41,6 +41,8 @@ Private Type tAvalLinha
     CaboIsento   As Boolean  ' CABO ISOLADO < CABO_ISOLADO_MAX_M (isento)
     ReprovaLinha As Boolean  ' esta linha reprova o PEP4/PEP3
     RecalculaSit As Boolean  ' SIT MAT recalculada (cabo/condutor/ramal numerico)
+    SinalInvalido As Boolean ' valor/quantidade com sinal oposto ao do tipo de OD
+    MotivoSinal  As String   ' descricao da violacao de sinal ("" quando ok)
 End Type
 
 ' Estrutura de dados para NT.006
@@ -415,6 +417,9 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
     For oc = 1 To nCols
         srcIdx(oc) = ColIdx(mapa, NormStr(CStr(outHdr(oc - 1))))
     Next oc
+    ' TIPO PEP nao vai para a aba de saida, mas classifica o tipo de OD quando o
+    ' PEP4 nao tem sufixo (.I/.S/.D) - usado na premissa de sinal
+    Dim iTpPep As Long : iTpPep = ColIdx(mapa, "TIPO PEP")
 
     Dim refCol As Long : refCol = srcIdx(5)
     If refCol = 0 Then refCol = 1
@@ -474,8 +479,15 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(10) > 0 Then prjV = baseData(i, srcIdx(10))
             ' Avaliacao unificada da linha (mesma funcao usada no loop de exibicao).
             ' UC zerado so reprova quando a obra (PEP3) esta TODA zerada.
+            ' tipo de OD pelo PEP4 CRU (o pep4 acima passou por NormStr, sem o ponto)
+            Dim p4Raw As String, tpPepR As String, valR As Variant
+            p4Raw = "" : tpPepR = "" : valR = 0
+            If srcIdx(2) > 0 Then p4Raw = CStr(baseData(i, srcIdx(2)))
+            If iTpPep > 0 Then tpPepR = CStr(baseData(i, iTpPep))
+            If srcIdx(6) > 0 Then valR = baseData(i, srcIdx(6))
             Dim av As tAvalLinha
-            av = AvaliarLinha(tipoR, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, pep3R))
+            av = AvaliarLinha(tipoR, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
+                              ClassificarOD(p4Raw, tpPepR), valR)
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
             If pep4 <> "" And Not p4pep3.Exists(pep4) Then p4pep3.Add pep4, pep3R
             If pep4 <> "" And av.Avaliavel And Not av.CaboIsento Then
@@ -486,6 +498,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                     ' registra a familia culpada no PEP3 (sem duplicar)
                     Dim fLbl As String : fLbl = IIf(famRaw <> "", famRaw, "(sem familia)")
                     If av.UcZerado Then fLbl = fLbl & " (valores zerados)"
+                    If av.SinalInvalido Then fLbl = fLbl & " (sinal invertido)"
                     If Not pep3RepFam.Exists(pep3R) Then
                         pep3RepFam.Add pep3R, fLbl
                     ElseIf InStr(pep3RepFam(pep3R), fLbl) = 0 Then
@@ -543,11 +556,17 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(11) > 0 Then tipoRow = NormStr(CStr(baseData(i, srcIdx(11))))
             Dim p3row As String : p3row = ""
             If srcIdx(1) > 0 Then p3row = NormStr(CStr(baseData(i, srcIdx(1))))
+            Dim p4RawRow As String, tpPepRow As String, valRow As Variant
+            p4RawRow = "" : tpPepRow = "" : valRow = 0
+            If srcIdx(2) > 0 Then p4RawRow = CStr(baseData(i, srcIdx(2)))
+            If iTpPep > 0 Then tpPepRow = CStr(baseData(i, iTpPep))
+            If srcIdx(6) > 0 Then valRow = baseData(i, srcIdx(6))
             Dim avRow As tAvalLinha
-            avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row))
+            avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
+                                 ClassificarOD(p4RawRow, tpPepRow), valRow)
 
             Dim sitText As String
-            If avRow.UcZerado Then
+            If avRow.UcZerado Or avRow.SinalInvalido Then
                 sitText = "NAO ADERENTE"
             ElseIf avRow.RecalculaSit Then
                 sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
@@ -567,6 +586,8 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                 outArr(i, 14) = noIco & " REPROVADO"
                 If avRow.UcZerado Then
                     motivo = "Obra com TODOS os materiais UC zerados (MAT LIB SAP=0 e MAT PRJ CAD=0) - devolvida"
+                ElseIf avRow.SinalInvalido Then
+                    motivo = "Este item nao aderente: " & avRow.MotivoSinal
                 ElseIf tipoRow = "UC" And Not avRow.EhAder And sitR <> "NULO" Then
                     motivo = "Este item (UC) nao aderente: SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV) & FmtDif(libV, prjV)
                 ElseIf tipoRow = "COM" And EhComCritico(famR) And Not avRow.EhAder And sitR <> "NULO" Then
@@ -589,6 +610,11 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                 Else
                     motivo = "Todos os itens avaliados do PEP3 aderentes"
                 End If
+            End If
+            ' item com sinal invertido em PEP3 nao reprovado (ex.: COM nao critico,
+            ' que nao entra no veredito): a linha e NAO ADERENTE e o motivo diz por que
+            If avRow.SinalInvalido And Not p3Reprovado Then
+                motivo = motivo & " | Item NAO ADERENTE: " & avRow.MotivoSinal
             End If
             outArr(i, 15) = motivo
             outArr(i, 16) = IIf(p3Reprovado, "Devolvido por divergencia de " & pep3RepFam(p3row), "")
@@ -1149,19 +1175,82 @@ End Function
 ' materiais UC do PEP3 estao zerados - o chamador informa via este flag
 ' (ver TodosUCZerados). Itens zerados isolados sao ignorados e o PEP3
 ' fica APROVADO quando as demais regras passam.
+' Tipo de OD do PEP: sufixo do PEP4 (.I/.M/.S/.D) ou, sem sufixo, a coluna
+' TIPO PEP (I/M/S/D ou ODI/ODM/ODS/ODD). Recebe o PEP4 CRU: NormStr remove o
+' ponto e apagaria o sufixo. Retorna "ODI", "ODM", "ODS", "ODD" ou "".
+Private Function ClassificarOD(ByVal pep4Raw As String, ByVal tipoPepRaw As String) As String
+    Select Case UCase(Right(Trim(pep4Raw), 2))
+        Case ".I": ClassificarOD = "ODI"
+        Case ".M": ClassificarOD = "ODM"
+        Case ".S": ClassificarOD = "ODS"
+        Case ".D": ClassificarOD = "ODD"
+        Case Else
+            Select Case UCase(Trim(tipoPepRaw))
+                Case "I", "ODI": ClassificarOD = "ODI"
+                Case "M", "ODM": ClassificarOD = "ODM"
+                Case "S", "ODS": ClassificarOD = "ODS"
+                Case "D", "ODD": ClassificarOD = "ODD"
+            End Select
+    End Select
+End Function
+
+' Premissa de sinal por tipo de OD, sobre VALOR e QUANTIDADE (MAT LIB SAP):
+'   ODD (desmonte)         -> ambos NEGATIVOS; positivo = NAO ADERENTE
+'   ODI / ODS (instalacao) -> ambos POSITIVOS; negativo = NAO ADERENTE
+' Zero nao viola (nao e positivo nem negativo). ODM fica fora da premissa.
+' Devolve a descricao da violacao, ou "" quando o sinal esta correto.
+Private Function SinalInvalidoOD(ByVal tipoOD As String, ByVal qtdV As Variant, _
+                                 ByVal valV As Variant) As String
+    Dim q As Double : q = Val0(qtdV)
+    Dim v As Double : v = Val0(valV)
+    Dim errado As String, esperado As String
+    Select Case tipoOD
+        Case "ODD"
+            esperado = "negativo"
+            If q > 0 And v > 0 Then
+                errado = "valor e quantidade POSITIVOS"
+            ElseIf q > 0 Then
+                errado = "quantidade POSITIVA"
+            ElseIf v > 0 Then
+                errado = "valor POSITIVO"
+            End If
+        Case "ODI", "ODS"
+            esperado = "positivo"
+            If q < 0 And v < 0 Then
+                errado = "valor e quantidade NEGATIVOS"
+            ElseIf q < 0 Then
+                errado = "quantidade NEGATIVA"
+            ElseIf v < 0 Then
+                errado = "valor NEGATIVO"
+            End If
+    End Select
+    If errado <> "" Then
+        SinalInvalidoOD = "PEP " & tipoOD & " com " & errado & " (esperado " & esperado & ")"
+    End If
+End Function
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
-                              Optional ucZeradoReprova As Boolean = True) As tAvalLinha
+                              Optional ucZeradoReprova As Boolean = True, _
+                              Optional ByVal tipoOD As String = "", _
+                              Optional ByVal valV As Variant = 0) As tAvalLinha
     Dim av As tAvalLinha
     av.UcZerado = MaterialUCZerado(tipoR, libV, prjV) And ucZeradoReprova
     av.EhAder = EhAderente(famR, libV, prjV, sitRNorm)
     If av.UcZerado Then av.EhAder = False   ' UC zerado nunca e aderente
+    ' Premissa de sinal por tipo de OD: valor/quantidade com sinal oposto ao
+    ' esperado torna o item NAO ADERENTE, independente da comparacao SAP x PRJ
+    av.MotivoSinal = SinalInvalidoOD(tipoOD, libV, valV)
+    av.SinalInvalido = (av.MotivoSinal <> "")
+    If av.SinalInvalido Then av.EhAder = False
     av.CaboIsento = CaboComoCOM(famR, libV)
     ' UC sempre avalia; COM avalia apenas se for familia critica (COM_CRITICO)
     av.Avaliavel = (tipoR = "UC") Or (tipoR = "COM" And EhComCritico(famR))
-    ' reprova: nao aderente com situacao valida, OU material UC zerado
-    av.ReprovaLinha = (Not av.EhAder And sitRNorm <> "NULO") Or av.UcZerado
+    ' reprova: nao aderente com situacao valida, OU material UC zerado, OU sinal
+    ' invertido (fato do dado: nao depende do texto da SIT MAT, nem de "NULO")
+    av.ReprovaLinha = (Not av.EhAder And sitRNorm <> "NULO") Or av.UcZerado _
+                      Or av.SinalInvalido
     ' SIT MAT recalculada p/ cabo/condutor/ramal com valores numericos
     av.RecalculaSit = (Left(famR, 4) = "COND" Or Left(famR, 4) = "CABO" Or famR = "RAMAL") _
                       And IsNumeric(libV) And IsNumeric(prjV)
@@ -1666,8 +1755,27 @@ End Sub
 
 Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
 
+    ' Cabecalho PRIMEIRO: se algo abaixo falhar, a aba ainda tem estrutura e o
+    ' anexo do diagnostico (AnexarAtencoesAlerta) tem onde se apoiar. Antes, uma
+    ' falha ao carregar precos abortava a etapa com a aba totalmente vazia.
+    EscreverCabecalhoAlerta ws, 1
+
+    ' Precos de referencia so alimentam o alerta UC SUBVALORIZADO: se a base de
+    ' precos falhar, a etapa segue sem esse alerta em vez de abortar inteira.
+    mStep = "ALERTA CRITICO (precos de referencia)"
     Dim precos As Object
+    On Error Resume Next
     Set precos = CarregarPrecos(wsBase.Parent)
+    If Err.Number <> 0 Then
+        LogAdd "ALERTA CRITICO: precos de referencia indisponiveis (" & Err.Description & _
+               ") - alerta UC SUBVALORIZADO desativado nesta execucao"
+        mFalhas = mFalhas & vbCrLf & "  - ALERTA CRITICO (aviso): precos de referencia " & _
+                  "indisponiveis, sem alerta UC SUBVALORIZADO - " & Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
+    If precos Is Nothing Then Set precos = CreateObject("Scripting.Dictionary")
+    mStep = "ALERTA CRITICO (leitura da base)"
 
     Dim lastC As Long
     lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
@@ -1685,20 +1793,6 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     idxQtd     = ColIdx(mapa, "MAT LIB SAP")
     idxTipoPep = ColIdx(mapa, "TIPO PEP")
 
-    Dim hdrs As Variant
-    hdrs = Array("TIPO ALERTA","PEP3NIVEL","PEP4NIVEL","COD MAT","DESC MAT","FAMILIA","VALOR","QTD","PRECO UNIT","REFERENCIA","MOTIVO")
-    For c = 1 To 11
-        With ws.Cells(1, c)
-            .Value = hdrs(c - 1)
-            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
-            .Font.Color = RGB(235, 240, 248)
-            .Interior.Color = RGB(17, 24, 39)        ' navy escuro
-            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
-            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
-        End With
-    Next c
-    ws.Rows(1).RowHeight = 30
-
     ' outRow e declarado ANTES do early-exit abaixo: o GoTo Finaliza2 pula a
     ' secao de declaracoes seguinte, e Finaliza2 usa outRow para saber quantos
     ' alertas foram gerados (totAl = outRow - 2).
@@ -1711,6 +1805,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim d As Variant
     d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastRow, lastC)).Value
     Dim n As Long : n = lastRow - 1
+    mStep = "ALERTA CRITICO (regras por linha)"
 
     ' Saida bufferizada (perf): alertas acumulados em memoria via AlertaCel e
     ' escritos na planilha numa unica atribuicao em Finaliza2
@@ -1831,17 +1926,10 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             outRow = outRow + 1
         End If
 
-        ' Sinal do material x tipo de OD (sufixo do PEP4):
-        '  ODI/.I, ODM/.M, ODS/.S  -> esperado POSITIVO (instala/movimenta); negativo = alerta
-        '  ODD/.D                  -> esperado NEGATIVO (desmonte); positivo = alerta
-        Dim suf As String : suf = UCase(Right(pep4, 2))
-        Dim odTp As String : odTp = ""
-        Select Case suf
-            Case ".I": odTp = "ODI"
-            Case ".M": odTp = "ODM"
-            Case ".S": odTp = "ODS"
-            Case ".D": odTp = "ODD"
-        End Select
+        ' Tipo de OD: sufixo do PEP4 ou, sem sufixo, a coluna TIPO PEP
+        Dim tpPepRow As String : tpPepRow = ""
+        If idxTipoPep > 0 Then tpPepRow = CStr(d(i, idxTipoPep))
+        Dim odTp As String : odTp = ClassificarOD(pep4, tpPepRow)
 
         ' ODM: acumula medidores e lacres por PEP4 (regra 1 medidor = 2 lacres)
         If odTp = "ODM" Then
@@ -1853,7 +1941,22 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
                 If lacreP4.Exists(pep4) Then lacreP4(pep4) = lacreP4(pep4) + qtd Else lacreP4.Add pep4, qtd
             End If
         End If
-        If (odTp = "ODI" Or odTp = "ODM" Or odTp = "ODS") And qtd < 0 And codMat <> "" Then
+        ' Premissa de sinal (valor E quantidade) - a mesma de AvaliarLinha, que
+        ' marca estes itens como NAO ADERENTE na ANALISE SAP x PRJ
+        Dim motSinal As String : motSinal = SinalInvalidoOD(odTp, qtd, valor)
+        If motSinal <> "" And codMat <> "" Then
+            AlertaCel outRow, 1, IIf(odTp = "ODD", "MATERIAL POSITIVO EM ODD", "MATERIAL NEGATIVO")
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 11, motSinal & " - item NAO ADERENTE"
+            outRow = outRow + 1
+        ElseIf odTp = "ODM" And qtd < 0 And codMat <> "" Then
+            ' ODM fica fora da premissa de aderencia; segue apenas como alerta
             AlertaCel outRow, 1, "MATERIAL NEGATIVO"
             AlertaCel outRow, 2, pep3
             AlertaCel outRow, 3, pep4
@@ -1862,18 +1965,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 6, familia
             AlertaCel outRow, 7, valor
             AlertaCel outRow, 8, qtd
-            AlertaCel outRow, 11, "Material NEGATIVO em PEP " & odTp & " (esperado positivo)"
-            outRow = outRow + 1
-        ElseIf odTp = "ODD" And qtd > 0 And codMat <> "" Then
-            AlertaCel outRow, 1, "MATERIAL POSITIVO EM ODD"
-            AlertaCel outRow, 2, pep3
-            AlertaCel outRow, 3, pep4
-            AlertaCel outRow, 4, codMat
-            AlertaCel outRow, 5, descMat
-            AlertaCel outRow, 6, familia
-            AlertaCel outRow, 7, valor
-            AlertaCel outRow, 8, qtd
-            AlertaCel outRow, 11, "Material POSITIVO em PEP ODD (esperado negativo / desmonte)"
+            AlertaCel outRow, 11, "Material NEGATIVO em PEP ODM (esperado positivo)"
             outRow = outRow + 1
         End If
 
@@ -1992,6 +2084,7 @@ ProxLinha2:
     End If
 
 Finaliza2:
+    mStep = "ALERTA CRITICO (montagem da aba)"
     Dim totAl As Long : totAl = outRow - 2
 
     ' Despeja o buffer de alertas na planilha numa UNICA atribuicao de Range
@@ -2114,14 +2207,7 @@ Finaliza2:
     If nTp > 0 Then nIns = 2 + nLinSum + 1 Else nIns = 2
     ws.Range("1:" & nIns).Insert Shift:=xlDown
 
-    With ws.Range("A1:K2")
-        .Merge
-        .Value = ChrW(&H26A0) & "  PAINEL DE ALERTAS CRITICOS"
-        .Font.Name = "Segoe UI Semibold" : .Font.Size = 18 : .Font.Bold = True
-        .Font.Color = RGB(255, 255, 255) : .Interior.Color = RGB(176, 0, 0)
-        .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
-    End With
-    ws.Rows(1).RowHeight = 22 : ws.Rows(2).RowHeight = 22
+    EscreverTituloAlerta ws
 
     If nTp > 0 Then
         Dim cIni As Variant : cIni = Array(1, 4, 7)
@@ -2173,6 +2259,7 @@ Finaliza2:
     ActiveWindow.FreezePanes = True
     On Error GoTo 0
     ws.Range("A1").Select
+    mStep = "ALERTA CRITICO"     ' concluiu: o log registra a etapa pelo nome normal
 End Sub
 
 ' Paleta por tipo de alerta: cor de fundo da linha e cor do "chip" da coluna 1.
@@ -2200,15 +2287,51 @@ End Sub
 ' quando ha apontamentos, um resumo por tipo de altura variavel - por isso a
 ' linha do cabecalho nao pode ser fixa. Procura a linha cujo A = "TIPO ALERTA".
 Private Function PrimeiraLinhaAlerta(wsA As Worksheet) As Long
+    Dim r As Long : r = LinhaCabecalhoAlerta(wsA)
+    If r > 0 Then PrimeiraLinhaAlerta = r + 1 Else PrimeiraLinhaAlerta = 4
+End Function
+
+' Linha do cabecalho (A = "TIPO ALERTA") da aba ALERTA CRITICO; 0 se nao houver.
+Private Function LinhaCabecalhoAlerta(wsA As Worksheet) As Long
     Dim r As Long
     For r = 1 To 40
         If NormStr(CStr(wsA.Cells(r, 1).Value)) = "TIPO ALERTA" Then
-            PrimeiraLinhaAlerta = r + 1
+            LinhaCabecalhoAlerta = r
             Exit Function
         End If
     Next r
-    PrimeiraLinhaAlerta = 4      ' layout anterior ao resumo, como reserva
 End Function
+
+' Cabecalho da tabela da aba ALERTA CRITICO, na linha indicada.
+Private Sub EscreverCabecalhoAlerta(ws As Worksheet, ByVal linha As Long)
+    Dim hdrs As Variant
+    hdrs = Array("TIPO ALERTA", "PEP3NIVEL", "PEP4NIVEL", "COD MAT", "DESC MAT", "FAMILIA", _
+                 "VALOR", "QTD", "PRECO UNIT", "REFERENCIA", "MOTIVO")
+    Dim c As Long
+    For c = 1 To 11
+        With ws.Cells(linha, c)
+            .Value = hdrs(c - 1)
+            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
+            .Font.Color = RGB(235, 240, 248)
+            .Interior.Color = RGB(17, 24, 39)        ' navy escuro
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
+        End With
+    Next c
+    ws.Rows(linha).RowHeight = 30
+End Sub
+
+' Banda de titulo (A1:K2) da aba ALERTA CRITICO.
+Private Sub EscreverTituloAlerta(ws As Worksheet)
+    With ws.Range("A1:K2")
+        .Merge
+        .Value = ChrW(&H26A0) & "  PAINEL DE ALERTAS CRITICOS"
+        .Font.Name = "Segoe UI Semibold" : .Font.Size = 18 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = RGB(176, 0, 0)
+        .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+    End With
+    ws.Rows(1).RowHeight = 22 : ws.Rows(2).RowHeight = 22
+End Sub
 
 ' Escreve uma celula de alerta no buffer (substitui ws.Cells(outRow, c).Value =).
 ' Cresce o buffer sob demanda; outRow comeca em 2 (linha 1 = cabecalho).
@@ -2250,7 +2373,8 @@ Private Function CarregarPrecos(wb As Workbook) As Object
             Dim dPr As Variant : dPr = wsPrecos.Range(wsPrecos.Cells(2, 1), wsPrecos.Cells(lastRow, 2)).Value
             Dim r As Long
             For r = 1 To UBound(dPr, 1)
-                Dim cod As String : cod = NormCod(dPr(r, 1))
+                Dim cod As String : cod = ""
+                If Not IsError(dPr(r, 1)) Then cod = NormCod(dPr(r, 1))
                 Dim preco As Double : preco = Val0(dPr(r, 2))
                 If cod <> "" And preco > 0 Then
                     If Not precos.Exists(cod) Then precos.Add cod, preco
@@ -2366,15 +2490,22 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     If cTxt = 0 Then cTxt = 2
     If cMin = 0 Then cMin = 4
     If cMax = 0 Then cMax = 5
+    ' base com menos colunas que as posicoes-padrao: ler ao menos ate a 5a evita
+    ' estourar o array (erro 9) - a coluna ausente e lida como vazia
+    If lastC < 5 Then lastC = 5
 
     Dim lastR As Long : lastR = wsP.Cells(wsP.Rows.Count, cMat).End(xlUp).Row
     If lastR >= 2 Then
         Dim dd As Variant : dd = wsP.Range(wsP.Cells(2, 1), wsP.Cells(lastR, lastC)).Value
         Dim r As Long
         For r = 1 To UBound(dd, 1)
-            Dim cod As String : cod = NormCod(dd(r, cMat))
+            ' IsError: celula com #N/D derrubava a carga inteira (CStr falha nela)
+            Dim cod As String : cod = ""
+            If Not IsError(dd(r, cMat)) Then cod = NormCod(dd(r, cMat))
             If cod <> "" And Not fx.Exists(cod) Then
-                fx.Add cod, Val0(dd(r, cMin)) & "|" & Val0(dd(r, cMax)) & "|" & Trim(CStr(dd(r, cTxt)))
+                Dim txtM As String : txtM = ""
+                If Not IsError(dd(r, cTxt)) Then txtM = Trim(CStr(dd(r, cTxt)))
+                fx.Add cod, Val0(dd(r, cMin)) & "|" & Val0(dd(r, cMax)) & "|" & txtM
             End If
         Next r
     End If
@@ -2483,26 +2614,8 @@ Private Sub ProcessarPrecoUnitario(wsBase As Worksheet, ws As Worksheet)
             ' TIPO OD: classifica o PEP pelo sufixo do PEP4 (.I/.M/.S/.D) ou pela coluna TIPO PEP
             Dim pep4OD As String : pep4OD = "" : If iPep4 > 0 Then pep4OD = UCase(Trim(CStr(d(i, iPep4))))
             Dim tpRaw As String : tpRaw = "" : If iTipoPep > 0 Then tpRaw = UCase(Trim(CStr(d(i, iTipoPep))))
-            Dim tipoOD As String
-            If Right(pep4OD, 2) = ".I" Then
-                tipoOD = "ODI"
-            ElseIf Right(pep4OD, 2) = ".M" Then
-                tipoOD = "ODM"
-            ElseIf Right(pep4OD, 2) = ".S" Then
-                tipoOD = "ODS"
-            ElseIf Right(pep4OD, 2) = ".D" Then
-                tipoOD = "ODD"
-            ElseIf tpRaw = "I" Then
-                tipoOD = "ODI"
-            ElseIf tpRaw = "M" Then
-                tipoOD = "ODM"
-            ElseIf tpRaw = "S" Then
-                tipoOD = "ODS"
-            ElseIf tpRaw = "D" Then
-                tipoOD = "ODD"
-            Else
-                tipoOD = "-"
-            End If
+            Dim tipoOD As String : tipoOD = ClassificarOD(pep4OD, tpRaw)
+            If tipoOD = "" Then tipoOD = "-"
             outA(nOut, 14) = tipoOD
 Prox:
         Next i
@@ -3871,7 +3984,7 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Dim dP4 As Object : Set dP4 = CreateObject("Scripting.Dictionary")
     Dim dDup As Object : Set dDup = CreateObject("Scripting.Dictionary")
     Dim nFamVazia As Long, nTipoVazio As Long, nCodVazio As Long
-    Dim nQtdInval As Long, nUC As Long, nUC0 As Long, nDup As Long, nValNegODI As Long
+    Dim nQtdInval As Long, nUC As Long, nUC0 As Long, nDup As Long, nSinalInv As Long
     Dim i As Long, s As String, tp As String, p4 As String, kDup As String
     For i = 1 To n
         If iPep3 > 0 Then
@@ -3909,11 +4022,16 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
                 If dDup(kDup) = 2 Then nDup = nDup + 1
             End If
         End If
-        ' valor negativo em ODI (PEP .I - esperado positivo)
-        If iValor > 0 And p4 <> "" Then
-            Dim ehODI As Boolean : ehODI = (Right(p4, 2) = ".I")
-            If iTipoPep > 0 Then If NormStr(CStr(d(i, iTipoPep))) = "I" Then ehODI = True
-            If ehODI And Val0(d(i, iValor)) < 0 Then nValNegODI = nValNegODI + 1
+        ' sinal invertido por tipo de OD (mesma premissa de AvaliarLinha):
+        ' ODD exige negativo; ODI/ODS exigem positivo - em valor E quantidade
+        If p4 <> "" Then
+            Dim tpOdD As String : tpOdD = ""
+            If iTipoPep > 0 Then tpOdD = CStr(d(i, iTipoPep))
+            Dim lbD As Variant, vlD As Variant
+            lbD = 0 : vlD = 0
+            If iLib > 0 Then lbD = d(i, iLib)
+            If iValor > 0 Then vlD = d(i, iValor)
+            If SinalInvalidoOD(ClassificarOD(p4, tpOdD), lbD, vlD) <> "" Then nSinalInv = nSinalInv + 1
         End If
     Next i
 
@@ -3959,10 +4077,10 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
         IIf(nDup > 0, "ATENCAO", "OK"), _
         "Duplicidade soma quantidades 2x e pode gerar falso NAO ADERENTE. Consolide os lancamentos."
 
-    DiagAdd chk, nChk, nCrit, nAten, "Valor negativo em obra ODI (.I)", _
-        Format(nValNegODI, "#,##0") & " linha(s)", _
-        IIf(nValNegODI > 0, "ATENCAO", "OK"), _
-        "ODI espera valores positivos; negativo costuma ser estorno lancado na obra errada."
+    DiagAdd chk, nChk, nCrit, nAten, "Sinal invertido por tipo de OD", _
+        Format(nSinalInv, "#,##0") & " linha(s)", _
+        IIf(nSinalInv > 0, "ATENCAO", "OK"), _
+        "ODD exige valor e quantidade negativos; ODI/ODS, positivos. Essas linhas viram NAO ADERENTE."
 
     Dim faltantes As String : faltantes = ""
     If iTipoPep = 0 Then faltantes = faltantes & "TIPO PEP; "
@@ -4088,6 +4206,16 @@ Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
         If chk(i, 3) = "ATENCAO" Then nAt = nAt + 1
     Next i
     If nCr + nAt = 0 Then Exit Sub
+
+    ' Aba sem cabecalho = ProcessarAlertaCritico abortou antes de monta-la (o
+    ' motivo vai para a mensagem final e o LOG EXECUCAO). Monta o esqueleto -
+    ' titulo + cabecalho - para as linhas abaixo ficarem legiveis e filtraveis,
+    ' em vez de cairem soltas numa aba vazia.
+    If LinhaCabecalhoAlerta(wsA) = 0 Then
+        wsA.Cells.Clear
+        EscreverTituloAlerta wsA
+        EscreverCabecalhoAlerta wsA, 3
+    End If
 
     Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsA)
     Dim lastA As Long : lastA = wsA.Cells(wsA.Rows.Count, 1).End(xlUp).Row
@@ -4374,7 +4502,7 @@ End Sub
 
 ' --------- Testes de logica de negocio (rode via Alt+F8) ---------
 Public Sub TestarLogicaInventario()
-    Dim nomes(1 To 60) As String, oks(1 To 60) As Boolean, det(1 To 60) As String
+    Dim nomes(1 To 100) As String, oks(1 To 100) As Boolean, det(1 To 100) As String
     Dim cnt As Long, pass As Long
     Dim mp As Object : Set mp = CriarMapaNT006()
 
@@ -4416,6 +4544,20 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "AvaliarLinha UC zerado (obra toda zerada): reprova", (avT.UcZerado And avT.ReprovaLinha And Not avT.EhAder)
     avT = AvaliarLinha("UC", "PARAFUSO", 0, 0, "NULO", False)
     RegTest nomes, oks, det, cnt, "AvaliarLinha UC zerado isolado: ignorado, nao reprova", (Not avT.UcZerado And Not avT.ReprovaLinha)
+    ' Premissa de sinal por tipo de OD (valor E quantidade):
+    RegTest nomes, oks, det, cnt, "ClassificarOD sufixo .D = ODD", (ClassificarOD("1234.D", "") = "ODD")
+    RegTest nomes, oks, det, cnt, "ClassificarOD sem sufixo, TIPO PEP S = ODS", (ClassificarOD("1234", "S") = "ODS")
+    RegTest nomes, oks, det, cnt, "Sinal ODD -5/-100 = ok", (SinalInvalidoOD("ODD", -5, -100) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODD qtd +5 = NAO ADERENTE", (SinalInvalidoOD("ODD", 5, -100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODD valor +100 = NAO ADERENTE", (SinalInvalidoOD("ODD", -5, 100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODI 5/100 = ok", (SinalInvalidoOD("ODI", 5, 100) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODS valor -100 = NAO ADERENTE", (SinalInvalidoOD("ODS", 5, -100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODI zero = ok (nao e negativo)", (SinalInvalidoOD("ODI", 0, 0) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODM negativo = fora da premissa", (SinalInvalidoOD("ODM", -5, -100) = "")
+    avT = AvaliarLinha("UC", "PARAFUSO", 5, 5, "ADERENTE", False, "ODD", 100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD positivo: NAO ADERENTE e reprova", (avT.SinalInvalido And Not avT.EhAder And avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "PARAFUSO", -5, -5, "ADERENTE", False, "ODD", -100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD negativo: sinal ok, aderente", (Not avT.SinalInvalido And avT.EhAder)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
@@ -4473,6 +4615,7 @@ End Sub
 
 Private Sub RegTest(nomes() As String, oks() As Boolean, det() As String, _
                     cnt As Long, nome As String, ok As Boolean)
+    If cnt >= UBound(nomes) Then Exit Sub   ' nao estoura o quadro de testes
     cnt = cnt + 1
     nomes(cnt) = nome : oks(cnt) = ok : det(cnt) = IIf(ok, "PASSOU", "FALHOU")
 End Sub
