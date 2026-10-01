@@ -2090,19 +2090,19 @@ Finaliza2:
                 tpNome(ixS) = CStr(kS) : tpQtd(ixS) = dCnt(kS) : tpLin(ixS) = dFst(kS)
             Next kS
             ' ordena por quantidade desc (selection sort: no maximo ~15 tipos)
-            Dim aS As Long, bS As Long, mS As Long
-            For aS = 1 To nTp - 1
-                mS = aS
-                For bS = aS + 1 To nTp
-                    If tpQtd(bS) > tpQtd(mS) Then mS = bS
-                Next bS
-                If mS <> aS Then
+            Dim iSel As Long, jSel As Long, mSel As Long
+            For iSel = 1 To nTp - 1
+                mSel = iSel
+                For jSel = iSel + 1 To nTp
+                    If tpQtd(jSel) > tpQtd(mSel) Then mSel = jSel
+                Next jSel
+                If mSel <> iSel Then
                     Dim swN As String, swQ As Long, swL As Long
-                    swN = tpNome(aS) : tpNome(aS) = tpNome(mS) : tpNome(mS) = swN
-                    swQ = tpQtd(aS) : tpQtd(aS) = tpQtd(mS) : tpQtd(mS) = swQ
-                    swL = tpLin(aS) : tpLin(aS) = tpLin(mS) : tpLin(mS) = swL
+                    swN = tpNome(iSel) : tpNome(iSel) = tpNome(mSel) : tpNome(mSel) = swN
+                    swQ = tpQtd(iSel) : tpQtd(iSel) = tpQtd(mSel) : tpQtd(mSel) = swQ
+                    swL = tpLin(iSel) : tpLin(iSel) = tpLin(mSel) : tpLin(mSel) = swL
                 End If
-            Next aS
+            Next iSel
         End If
     End If
 
