@@ -2710,7 +2710,19 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
 
     Dim r As Long, p3 As String
 
+    ' PEPs sem material baixado no projeto: item "baixado" = MAT PRJ CAD diferente
+    ' de zero; PEP sem baixa = TODOS os seus itens com MAT PRJ CAD zero ou vazio
+    Dim p3Itn As Object : Set p3Itn = CreateObject("Scripting.Dictionary")  ' n itens
+    Dim p3Bx  As Object : Set p3Bx  = CreateObject("Scripting.Dictionary")  ' n itens baixados
+    Dim p3Lib As Object : Set p3Lib = CreateObject("Scripting.Dictionary")  ' soma |MAT LIB SAP|
+    Dim p4Itn As Object : Set p4Itn = CreateObject("Scripting.Dictionary")
+    Dim p4Bx  As Object : Set p4Bx  = CreateObject("Scripting.Dictionary")
+    Dim p4Lib As Object : Set p4Lib = CreateObject("Scripting.Dictionary")
+    Dim p4Val As Object : Set p4Val = CreateObject("Scripting.Dictionary")  ' soma |VALOR|
+    Dim p4P3  As Object : Set p4P3  = CreateObject("Scripting.Dictionary")  ' PEP4 -> PEP3
+
     ' 1) ANALISE SAP x PRJ (dados a partir da linha 10): valor + aprovacao
+    '    (col 2 = PEP4, 6 = VALOR, 9 = MAT LIB SAP, 10 = MAT PRJ CAD, 14 = APROVACAO)
     Dim lastD As Long : lastD = wsDet.Cells(wsDet.Rows.Count, 1).End(xlUp).Row
     If lastD >= 10 Then
         Dim dd As Variant : dd = wsDet.Range(wsDet.Cells(10, 1), wsDet.Cells(lastD, 15)).Value
@@ -2721,6 +2733,20 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
                 valOb(p3) = valOb(p3) + Abs(Val0(dd(r, 6)))
                 If Not repOb.Exists(p3) Then repOb.Add p3, False
                 If InStr(UCase(CStr(dd(r, 14))), "REPROVADO") > 0 Then repOb(p3) = True
+
+                Dim bxR As Boolean : bxR = (Val0(dd(r, 10)) <> 0)
+                Dim lbR As Double : lbR = Abs(Val0(dd(r, 9)))
+                p3Itn(p3) = p3Itn(p3) + 1
+                p3Lib(p3) = p3Lib(p3) + lbR
+                If bxR Then p3Bx(p3) = p3Bx(p3) + 1
+                Dim p4R As String : p4R = Trim(CStr(dd(r, 2)))
+                If p4R <> "" Then
+                    p4Itn(p4R) = p4Itn(p4R) + 1
+                    p4Lib(p4R) = p4Lib(p4R) + lbR
+                    p4Val(p4R) = p4Val(p4R) + Abs(Val0(dd(r, 6)))
+                    If bxR Then p4Bx(p4R) = p4Bx(p4R) + 1
+                    If Not p4P3.Exists(p4R) Then p4P3.Add p4R, p3
+                End If
             End If
         Next r
     End If
@@ -2883,6 +2909,9 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
                 If vSo > 0 Then diag = diag & " (sobrepreco " & FmtKPI(vSo) & ")"
             End If
             If nCo > 0 Then diag = diag & IIf(diag <> "", " | ", "") & nCo & " COM fora do previsto"
+            If p3Itn.Exists(p3) And Not p3Bx.Exists(p3) Then
+                diag = diag & IIf(diag <> "", " | ", "") & "nenhum material baixado no PRJ"
+            End If
             If diag = "" Then diag = "Sem apontamentos"
 
             outA(ix + 1, 1) = ix + 1
@@ -2904,7 +2933,7 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     End If
 
     ' ---------------- formatacao ----------------
-    Dim wds As Variant : wds = Array(5, 26, 14, 13, 9, 13, 14, 15, 8, 9, 70)
+    Dim wds As Variant : wds = Array(7, 26, 14, 13, 9, 13, 14, 15, 8, 9, 70)
     For c = 1 To 11 : ws.Columns(c).ColumnWidth = wds(c - 1) : Next c
 
     ' Formatacao em LOTE: base numa chamada so; cores por BLOCOS de risco
@@ -2959,6 +2988,13 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
 
     If outRow > 4 Then ws.Range(ws.Cells(3, 1), ws.Cells(3, 11)).AutoFilter
 
+    ' Secao de PEPs sem material baixado no PRJ, 3 linhas abaixo do ranking. As
+    ' linhas em branco isolam os blocos: autofiltro, contador do titulo e o nome
+    ' dadosRanking param no fim do ranking (UltimaLinhaContigua).
+    Dim rSec As Long
+    If nOb > 0 Then rSec = 3 + nOb + 3 Else rSec = 7
+    SecaoSemBaixaPRJ ws, rSec, p3Itn, p3Bx, p3Lib, valOb, repOb, p4Itn, p4Bx, p4Lib, p4Val, p4P3
+
     On Error Resume Next
     ws.Activate
     ActiveWindow.DisplayGridlines = False
@@ -2978,6 +3014,185 @@ End Sub
 '    4. PRECO UNITARIO ganha banda de titulo (nao tinha)
 '    5. Drill-down: cards do PAINEL viram atalhos para a aba de origem
 ' ===========================================================================
+' Secao "PEPs sem material baixado no projeto" do RANKING DE RISCO.
+'   PEP3: todos os itens do PEP3 com MAT PRJ CAD zero ou vazio.
+'   PEP4: idem no PEP4 - listado so quando o PEP3 dele TEM baixa em outro PEP4
+'         (se o PEP3 inteiro esta sem baixa, a linha do PEP3 ja o cobre).
+' Cada grupo vem ordenado por valor decrescente.
+Private Sub SecaoSemBaixaPRJ(ws As Worksheet, ByVal r0 As Long, _
+        p3Itn As Object, p3Bx As Object, p3Lib As Object, p3Val As Object, p3Rep As Object, _
+        p4Itn As Object, p4Bx As Object, p4Lib As Object, p4Val As Object, p4P3 As Object)
+
+    ' quantos PEP4 cada PEP3 tem (para a observacao da linha do PEP3)
+    Dim p3NP4 As Object : Set p3NP4 = CreateObject("Scripting.Dictionary")
+    Dim k As Variant
+    For Each k In p4P3.Keys
+        p3NP4(p4P3(k)) = p3NP4(p4P3(k)) + 1
+    Next k
+
+    ' lista: PEP3 sem baixa primeiro (1..n3), depois PEP4 sem baixa (n3+1..n)
+    Dim pp() As String, vl() As Double, n As Long, n3 As Long
+    Dim nMax As Long : nMax = p3Itn.Count + p4Itn.Count
+    If nMax > 0 Then ReDim pp(1 To nMax) : ReDim vl(1 To nMax)
+    For Each k In p3Itn.Keys
+        If Not p3Bx.Exists(k) Then
+            n = n + 1 : pp(n) = CStr(k)
+            If p3Val.Exists(k) Then vl(n) = p3Val(k)
+        End If
+    Next k
+    n3 = n
+    For Each k In p4Itn.Keys
+        If Not p4Bx.Exists(k) Then
+            If p3Bx.Exists(p4P3(k)) Then
+                n = n + 1 : pp(n) = CStr(k) : vl(n) = p4Val(k)
+            End If
+        End If
+    Next k
+    OrdenarPorValor pp, vl, 1, n3
+    OrdenarPorValor pp, vl, n3 + 1, n
+
+    ' -- titulo da secao --
+    With ws.Range(ws.Cells(r0, 1), ws.Cells(r0, 11))
+        .Merge
+        .Value = "PEPs SEM MATERIAL BAIXADO NO PROJETO  (MAT PRJ CAD zerado ou vazio em todos os itens)" & _
+                 "   -   " & n3 & " PEP3  |  " & (n - n3) & " PEP4"
+        .Font.Name = "Segoe UI Semibold" : .Font.Size = 12 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = RGB(176, 0, 0)
+        .HorizontalAlignment = xlLeft : .VerticalAlignment = xlCenter : .IndentLevel = 1
+    End With
+    ws.Rows(r0).RowHeight = 24
+
+    ' -- cabecalho (H:J mesclado = PEP3 do PEP4) --
+    Dim h As Variant
+    h = Array("NIVEL", "PEP", "VALOR", "SITUACAO", "ITENS", "MAT LIB SAP", "TIPO OD", _
+              "PEP3 DO PEP4", "", "", "OBSERVACAO")
+    Dim c As Long
+    For c = 1 To 11
+        With ws.Cells(r0 + 1, c)
+            .Value = h(c - 1)
+            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
+            .Font.Color = RGB(235, 240, 248) : .Interior.Color = RGB(31, 41, 59)
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
+        End With
+    Next c
+    ws.Range(ws.Cells(r0 + 1, 8), ws.Cells(r0 + 1, 10)).Merge
+    ws.Rows(r0 + 1).RowHeight = 26
+
+    If n = 0 Then
+        With ws.Cells(r0 + 2, 1)
+            .Value = "Todos os PEP3 e PEP4 tem ao menos um material baixado em MAT PRJ CAD."
+            .Font.Italic = True : .Font.Color = RGB(0, 128, 0)
+        End With
+        Exit Sub
+    End If
+
+    ' -- linhas (escrita unica em array) --
+    Dim outS() As Variant : ReDim outS(1 To n, 1 To 11)
+    Dim i As Long, pep As String, p3d As String, libS As Double, obs As String, nP4 As Long
+    For i = 1 To n
+        pep = pp(i)
+        If i <= n3 Then
+            p3d = pep
+            libS = p3Lib(pep)
+            nP4 = 0 : If p3NP4.Exists(pep) Then nP4 = p3NP4(pep)
+            outS(i, 1) = "PEP3"
+            outS(i, 5) = p3Itn(pep)
+            obs = "Nenhum dos " & p3Itn(pep) & " itens (em " & nP4 & _
+                  " PEP4) tem MAT PRJ CAD baixado"
+        Else
+            p3d = CStr(p4P3(pep))
+            libS = p4Lib(pep)
+            outS(i, 1) = "PEP4"
+            outS(i, 5) = p4Itn(pep)
+            outS(i, 7) = ClassificarOD(pep, "")
+            outS(i, 8) = p3d
+            obs = "O PEP3 tem baixa em outros PEP4; este PEP4 nao tem nenhuma (" & _
+                  p4Itn(pep) & " itens)"
+        End If
+        ' SAP com material liberado e projeto sem nada baixado = o sinal mais forte
+        ' (Format "#,##0.##" deixaria virgula sobrando em inteiro: "1.234,")
+        If libS > 0 Then obs = obs & " | SAP liberou " & _
+            IIf(libS = Int(libS), Format(libS, "#,##0"), Format(libS, "#,##0.00")) & _
+            " - material sem projeto"
+        outS(i, 2) = pep
+        outS(i, 3) = vl(i)
+        If p3Rep.Exists(p3d) Then outS(i, 4) = IIf(p3Rep(p3d), "REPROVADO", "APROVADO")
+        outS(i, 6) = libS
+        outS(i, 11) = obs
+    Next i
+    Dim rI As Long : rI = r0 + 2
+    Dim rF As Long : rF = r0 + 1 + n
+    ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11)).Value = outS
+
+    ' -- formatacao: PEP3 em vermelho, PEP4 em ambar --
+    With ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11))
+        .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Color = RGB(45, 52, 64)
+        .VerticalAlignment = xlCenter
+        .Borders(xlInsideHorizontal).LineStyle = xlContinuous
+        .Borders(xlInsideHorizontal).Color = RGB(255, 255, 255)
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(255, 255, 255)
+    End With
+    ws.Range(ws.Cells(rI, 8), ws.Cells(rF, 10)).Merge True     ' H:J por linha
+    ws.Range(ws.Cells(rI, 3), ws.Cells(rF, 3)).NumberFormat = "#,##0.00"
+    ws.Range(ws.Cells(rI, 6), ws.Cells(rF, 6)).NumberFormat = "#,##0.00"
+    ws.Range(ws.Cells(rI, 4), ws.Cells(rF, 5)).HorizontalAlignment = xlCenter
+    ws.Range(ws.Cells(rI, 7), ws.Cells(rF, 7)).HorizontalAlignment = xlCenter
+    If n3 > 0 Then
+        ws.Range(ws.Cells(rI, 1), ws.Cells(rI + n3 - 1, 11)).Interior.Color = RGB(252, 226, 228)
+        With ws.Range(ws.Cells(rI, 1), ws.Cells(rI + n3 - 1, 1))
+            .Interior.Color = RGB(192, 0, 0) : .Font.Color = RGB(255, 255, 255)
+            .Font.Bold = True : .HorizontalAlignment = xlCenter
+        End With
+    End If
+    If n > n3 Then
+        ws.Range(ws.Cells(rI + n3, 1), ws.Cells(rF, 11)).Interior.Color = RGB(255, 244, 214)
+        With ws.Range(ws.Cells(rI + n3, 1), ws.Cells(rF, 1))
+            .Interior.Color = RGB(176, 124, 0) : .Font.Color = RGB(255, 255, 255)
+            .Font.Bold = True : .HorizontalAlignment = xlCenter
+        End With
+    End If
+    For i = 1 To n
+        If CStr(outS(i, 4)) = "REPROVADO" Then
+            With ws.Cells(rI + i - 1, 4)
+                .Font.Color = RGB(192, 0, 0) : .Font.Bold = True
+            End With
+        End If
+    Next i
+End Sub
+
+' Ordena pp/vl por vl decrescente no intervalo [lo, hi] (selection sort:
+' algumas centenas de PEPs no maximo).
+Private Sub OrdenarPorValor(pp() As String, vl() As Double, ByVal lo As Long, ByVal hi As Long)
+    Dim a As Long, b As Long, m As Long, tS As String, tV As Double
+    For a = lo To hi - 1
+        m = a
+        For b = a + 1 To hi
+            If vl(b) > vl(m) Then m = b
+        Next b
+        If m <> a Then
+            tS = pp(a) : pp(a) = pp(m) : pp(m) = tS
+            tV = vl(a) : vl(a) = vl(m) : vl(m) = tV
+        End If
+    Next a
+End Sub
+
+' Ultima linha do bloco CONTIGUO de dados na coluna, a partir de linhaIni.
+' Diferente de End(xlUp) a partir do fim da planilha, nao engole blocos
+' colocados abaixo (ex.: a secao de PEPs sem baixa no RANKING DE RISCO).
+' Devolve linhaIni - 1 quando o bloco esta vazio.
+Private Function UltimaLinhaContigua(ws As Worksheet, ByVal linhaIni As Long, _
+                                     ByVal col As Long) As Long
+    If IsEmpty(ws.Cells(linhaIni, col).Value) Then
+        UltimaLinhaContigua = linhaIni - 1
+    ElseIf IsEmpty(ws.Cells(linhaIni + 1, col).Value) Then
+        UltimaLinhaContigua = linhaIni
+    Else
+        UltimaLinhaContigua = ws.Cells(linhaIni, col).End(xlDown).Row
+    End If
+End Function
+
 Private Function CorAcento(nome As String) As Long
     Select Case nome
         Case "PAINEL DO GESTOR":   CorAcento = RGB(17, 24, 39)     ' navy
@@ -3059,7 +3274,8 @@ Private Sub AppendContagem(wb As Workbook, aba As String, _
     Set ws = wb.Worksheets(aba)
     On Error GoTo 0
     If ws Is Nothing Then Exit Sub
-    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    ' bloco contiguo: nao conta secoes colocadas abaixo dos dados
+    Dim lastR As Long : lastR = UltimaLinhaContigua(ws, primeiraLinhaDados, 1)
     Dim n As Long : n = lastR - primeiraLinhaDados + 1
     If n < 0 Then n = 0
     If n = 1 Then
@@ -4478,11 +4694,14 @@ End Function
 Private Sub CriarNomesDefinidos(wb As Workbook)
     DefinirNome wb, "ANALISE SAP x PRJ", "dadosAnalise", "PEP3NIVEL", 1, 16
     DefinirNome wb, "PRECO UNITARIO", "dadosPrecoUnitario", "PEP3NIVEL", 1, 14
-    DefinirNome wb, "RANKING DE RISCO", "dadosRanking", "PEP3NIVEL", 2, 11
+    DefinirNome wb, "RANKING DE RISCO", "dadosRanking", "PEP3NIVEL", 2, 11, True
 End Sub
 
+' contiguo = True: o intervalo termina no fim do bloco de dados (para abas com
+' outra secao abaixo, como o RANKING DE RISCO); False: ultima linha preenchida.
 Private Sub DefinirNome(wb As Workbook, sheetName As String, nome As String, _
-                        token As String, colToken As Long, nCols As Long)
+                        token As String, colToken As Long, nCols As Long, _
+                        Optional ByVal contiguo As Boolean = False)
     On Error Resume Next
     Dim ws As Worksheet : Set ws = wb.Worksheets(sheetName)
     If ws Is Nothing Then Exit Sub
@@ -4493,6 +4712,7 @@ Private Sub DefinirNome(wb As Workbook, sheetName As String, nome As String, _
     Next rr
     If hdrRow = 0 Then Exit Sub
     Dim lastRow As Long : lastRow = ws.Cells(ws.Rows.Count, colToken).End(xlUp).Row
+    If contiguo Then lastRow = UltimaLinhaContigua(ws, hdrRow + 1, colToken)
     If lastRow < hdrRow Then Exit Sub
     wb.Names(nome).Delete
     wb.Names.Add Name:=nome, RefersTo:="='" & ws.Name & "'!" & _
