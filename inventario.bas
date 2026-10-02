@@ -20,6 +20,11 @@ Private mDifCondNu As Double ' COND NU: dif ABSOLUTA tolerada (CONFIG DIF_ABS_CO
 Private mDifAbsCabo As Double ' familias DIF_ABS_FAMILIAS: dif ABSOLUTA tolerada
 Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
 
+' Materiais equivalentes (aba EQUIVALENCIAS): COD normalizado -> GRUPO, e
+' GRUPO -> lista legivel dos codigos ("105300003 = 105300005").
+Private mEquiv As Object
+Private mEquivLista As Object
+
 ' Buffer de escrita da aba ALERTA CRITICO (perf: as ~10 escritas de celula por
 ' alerta viram 1 unica atribuicao de Range no final). Transposto (col, linha)
 ' porque ReDim Preserve so cresce a ULTIMA dimensao.
@@ -264,6 +269,7 @@ Public Sub GerarInventario()
 
     LogInit
     Call GarantirConfig(wb)
+    Call GarantirEquivalencias(wb)
     Dim faltam As String : faltam = ValidarBase(wsBase)
     If faltam <> "" Then
         Application.ScreenUpdating = True
@@ -466,6 +472,23 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             End If
         Next i
 
+        ' ---- Pre-passe: totais por grupo de materiais EQUIVALENTES no PEP4 ----
+        ' Codigos do mesmo grupo (aba EQUIVALENCIAS) no mesmo PEP4 sao avaliados
+        ' pela SOMA: o SAP baixou um codigo e o projeto previu o outro = aderente.
+        Dim eqLib As Object : Set eqLib = CreateObject("Scripting.Dictionary")
+        Dim eqPrj As Object : Set eqPrj = CreateObject("Scripting.Dictionary")
+        Dim eqK As String, eqL As Double, eqP As Double
+        For i = 1 To nRows
+            eqK = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            If eqK <> "" Then
+                eqL = 0 : eqP = 0
+                If srcIdx(9) > 0 Then eqL = Val0(baseData(i, srcIdx(9)))
+                If srcIdx(10) > 0 Then eqP = Val0(baseData(i, srcIdx(10)))
+                eqLib(eqK) = eqLib(eqK) + eqL
+                eqPrj(eqK) = eqPrj(eqK) + eqP
+            End If
+        Next i
+
         For i = 1 To nRows
             pep4 = "" : tipoR = "" : sitR = "" : famR = "" : famRaw = "" : pep3R = ""
             If srcIdx(2) > 0 Then pep4 = NormStr(CStr(baseData(i, srcIdx(2))))
@@ -485,9 +508,17 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(2) > 0 Then p4Raw = CStr(baseData(i, srcIdx(2)))
             If iTpPep > 0 Then tpPepR = CStr(baseData(i, iTpPep))
             If srcIdx(6) > 0 Then valR = baseData(i, srcIdx(6))
+            ' material de grupo EQUIVALENTE: aderencia pelo total do grupo no PEP4
+            Dim eqK1 As String : eqK1 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            Dim libAv As Variant, prjAv As Variant, sitAv As String
+            libAv = libV : prjAv = prjV : sitAv = sitR
+            If eqK1 <> "" Then
+                libAv = eqLib(eqK1) : prjAv = eqPrj(eqK1)
+                sitAv = SitPorQuantidade(libAv, prjAv)
+            End If
             Dim av As tAvalLinha
-            av = AvaliarLinha(tipoR, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
-                              ClassificarOD(p4Raw, tpPepR), valR)
+            av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
+                              ClassificarOD(p4Raw, tpPepR), valR, libV)
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
             If pep4 <> "" And Not p4pep3.Exists(pep4) Then p4pep3.Add pep4, pep3R
             If pep4 <> "" And av.Avaliavel And Not av.CaboIsento Then
@@ -561,13 +592,24 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(2) > 0 Then p4RawRow = CStr(baseData(i, srcIdx(2)))
             If iTpPep > 0 Then tpPepRow = CStr(baseData(i, iTpPep))
             If srcIdx(6) > 0 Then valRow = baseData(i, srcIdx(6))
+            ' grupo EQUIVALENTE: a partir daqui libV/prjV/sitR sao do TOTAL do grupo
+            ' no PEP4 (avaliacao e motivo); as colunas de quantidade da linha ja
+            ' foram copiadas acima com os valores proprios do item
+            Dim libRow As Variant : libRow = libV
+            Dim eqK2 As String : eqK2 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            If eqK2 <> "" Then
+                libV = eqLib(eqK2) : prjV = eqPrj(eqK2)
+                sitR = SitPorQuantidade(libV, prjV)
+            End If
             Dim avRow As tAvalLinha
             avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
-                                 ClassificarOD(p4RawRow, tpPepRow), valRow)
+                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow)
 
             Dim sitText As String
             If avRow.UcZerado Or avRow.SinalInvalido Then
                 sitText = "NAO ADERENTE"
+            ElseIf eqK2 <> "" Then
+                sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE") & " (EQUIV.)"
             ElseIf avRow.RecalculaSit Then
                 sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
             Else
@@ -615,6 +657,11 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             ' que nao entra no veredito): a linha e NAO ADERENTE e o motivo diz por que
             If avRow.SinalInvalido And Not p3Reprovado Then
                 motivo = motivo & " | Item NAO ADERENTE: " & avRow.MotivoSinal
+            End If
+            If eqK2 <> "" Then
+                motivo = motivo & " | Equivalentes " & _
+                         mEquivLista(Mid(eqK2, InStrRev(eqK2, "|") + 1)) & _
+                         ": total no PEP4 SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV)
             End If
             outArr(i, 15) = motivo
             outArr(i, 16) = IIf(p3Reprovado, "Devolvido por divergencia de " & pep3RepFam(p3row), "")
@@ -1248,14 +1295,19 @@ Private Function AvaliarLinha(tipoR As String, famR As String, _
                               sitRNorm As String, _
                               Optional ucZeradoReprova As Boolean = True, _
                               Optional ByVal tipoOD As String = "", _
-                              Optional ByVal valV As Variant = 0) As tAvalLinha
+                              Optional ByVal valV As Variant = 0, _
+                              Optional ByVal qtdSinal As Variant) As tAvalLinha
     Dim av As tAvalLinha
     av.UcZerado = MaterialUCZerado(tipoR, libV, prjV) And ucZeradoReprova
     av.EhAder = EhAderente(famR, libV, prjV, sitRNorm)
     If av.UcZerado Then av.EhAder = False   ' UC zerado nunca e aderente
     ' Premissa de sinal por tipo de OD: valor/quantidade com sinal oposto ao
     ' esperado torna o item NAO ADERENTE, independente da comparacao SAP x PRJ
-    av.MotivoSinal = SinalInvalidoOD(tipoOD, libV, valV)
+    ' qtdSinal: quantidade da propria linha quando libV e o TOTAL de um grupo
+    ' de equivalentes - o sinal vale por item, nao pelo total do grupo
+    Dim qS As Variant
+    If IsMissing(qtdSinal) Then qS = libV Else qS = qtdSinal
+    av.MotivoSinal = SinalInvalidoOD(tipoOD, qS, valV)
     av.SinalInvalido = (av.MotivoSinal <> "")
     If av.SinalInvalido Then av.EhAder = False
     av.CaboIsento = CaboComoCOM(famR, libV)
@@ -3468,7 +3520,7 @@ Private Function AcharBaseInventario(wb As Workbook) As Worksheet
 
     For Each ws In wb.Worksheets
         Select Case ws.Name
-            Case "PAINEL DO GESTOR", "ANALISE SAP x PRJ", "RESUMO SAP x PRJ", "RACIONALIZACAO COM", "ALERTA CRITICO", "PRECO UNITARIO", "RANKING DE RISCO", "CONFIG", "HISTORICO", "LOG EXECUCAO", "TESTES", "DIAGNOSTICO BASE", "DEVOLUCOES"
+            Case "PAINEL DO GESTOR", "ANALISE SAP x PRJ", "RESUMO SAP x PRJ", "RACIONALIZACAO COM", "ALERTA CRITICO", "PRECO UNITARIO", "RANKING DE RISCO", "CONFIG", "HISTORICO", "LOG EXECUCAO", "TESTES", "DIAGNOSTICO BASE", "DEVOLUCOES", "EQUIVALENCIAS", "HISTORICO KPI"
                 ' aba de saida / apoio - ignora
             Case Else
                 If ws.UsedRange.Rows.Count > 1 Then
@@ -3934,6 +3986,85 @@ Private Sub GravarLog(wb As Workbook)
     ws.Visible = xlSheetHidden
     On Error GoTo 0
 End Sub
+
+' --------- Materiais equivalentes (aba EQUIVALENCIAS) ---------
+' Codigos com o mesmo GRUPO sao intercambiaveis: na ANALISE SAP x PRJ, os itens
+' do grupo no mesmo PEP4 sao avaliados pela SOMA das quantidades (SAP baixou
+' um codigo e o projeto previu o outro = aderente). A aba e mantida pelo
+' usuario e nao e recriada; na primeira execucao nasce com o par inicial.
+Private Sub GarantirEquivalencias(wb As Workbook)
+    Set mEquiv = CreateObject("Scripting.Dictionary")
+    Set mEquivLista = CreateObject("Scripting.Dictionary")
+
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets("EQUIVALENCIAS")
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = "EQUIVALENCIAS"
+        ws.Columns(2).NumberFormat = "@"       ' codigo como texto (sem notacao cientifica)
+        ws.Cells(1, 1).Value = "GRUPO"
+        ws.Cells(1, 2).Value = "COD MAT"
+        ws.Cells(1, 3).Value = "DESCRICAO"
+        ws.Cells(2, 1).Value = "1" : ws.Cells(2, 2).Value = "105300003"
+        ws.Cells(3, 1).Value = "1" : ws.Cells(3, 2).Value = "105300005"
+        With ws.Range("A1:C1")
+            .Font.Bold = True : .Font.Color = RGB(255, 255, 255)
+            .Interior.Color = RGB(17, 24, 39) : .HorizontalAlignment = xlCenter
+        End With
+        ws.Cells(1, 5).Value = "Codigos com o mesmo GRUPO sao equivalentes: na ANALISE " & _
+            "SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela soma das quantidades."
+        ws.Cells(1, 5).Font.Italic = True : ws.Cells(1, 5).Font.Color = RGB(110, 118, 130)
+        ws.Columns(1).ColumnWidth = 10 : ws.Columns(2).ColumnWidth = 16
+        ws.Columns(3).ColumnWidth = 46
+        ws.Tab.Color = RGB(90, 90, 90)
+    End If
+
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+    Dim r As Long, grp As String, cod As String
+    For r = 2 To lastR
+        grp = "" : cod = ""
+        If Not IsError(ws.Cells(r, 1).Value) Then grp = Trim(CStr(ws.Cells(r, 1).Value))
+        If Not IsError(ws.Cells(r, 2).Value) Then cod = NormCod(ws.Cells(r, 2).Value)
+        If grp <> "" And cod <> "" And Not mEquiv.Exists(cod) Then
+            mEquiv.Add cod, grp
+            If mEquivLista.Exists(grp) Then
+                mEquivLista(grp) = mEquivLista(grp) & " = " & cod
+            Else
+                mEquivLista.Add grp, cod
+            End If
+        End If
+    Next r
+    LogAdd "EQUIVALENCIAS: " & mEquiv.Count & " codigo(s) em " & mEquivLista.Count & " grupo(s)"
+End Sub
+
+' Chave "PEP4|GRUPO" da linha da base quando o material esta em um grupo de
+' equivalentes; "" quando nao esta (ou falta PEP4 / COD MAT).
+Private Function ChaveEquiv(baseData As Variant, ByVal i As Long, _
+                            ByVal cP4 As Long, ByVal cCod As Long) As String
+    If mEquiv Is Nothing Then Exit Function
+    If mEquiv.Count = 0 Or cP4 = 0 Or cCod = 0 Then Exit Function
+    If IsError(baseData(i, cCod)) Or IsError(baseData(i, cP4)) Then Exit Function
+    Dim cod As String : cod = NormCod(baseData(i, cCod))
+    If cod = "" Then Exit Function
+    If Not mEquiv.Exists(cod) Then Exit Function
+    Dim p4 As String : p4 = NormStr(CStr(baseData(i, cP4)))
+    If p4 = "" Then Exit Function
+    ChaveEquiv = p4 & "|" & mEquiv(cod)
+End Function
+
+' SIT MAT recalculada pelas quantidades - usada no TOTAL de um grupo de
+' equivalentes, em que a SIT MAT de cada linha da base deixa de valer. Mesma
+' tolerancia (TOL_ADERENCIA_PCT) das familias avaliadas numericamente.
+Private Function SitPorQuantidade(ByVal libV As Variant, ByVal prjV As Variant) As String
+    Dim l As Double : l = Val0(libV)
+    Dim p As Double : p = Val0(prjV)
+    Dim tol As Double : tol = mTolAder : If tol <= 0 Then tol = 0.1
+    Dim ok As Boolean
+    If p = 0 Then ok = (l = 0) Else ok = (Abs(l - p) <= tol * Abs(p))
+    SitPorQuantidade = IIf(ok, "ADERENTE", "NAO ADERENTE")
+End Function
 
 ' --------- Mapa de colunas da base: fonte UNICA do "onde esta cada coluna" ---------
 ' Devolve um dicionario NOME NORMALIZADO -> indice da coluna, lendo a linha de
@@ -4824,6 +4955,14 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "PuBaixoODI COND NU = excluido", (PuBaixoODI("ODI", "COND NU", 5, 1, 0.01, 10) = False)
     RegTest nomes, oks, det, cnt, "PuBaixoODI PEP ODS = fora (so ODI)", (PuBaixoODI("ODS", "PARAFUSO", 5, 1, 0.01, 10) = False)
     RegTest nomes, oks, det, cnt, "PuBaixoODI QTD zero = sem alerta", (PuBaixoODI("ODI", "PARAFUSO", 5, 0, 0.01, 10) = False)
+    ' Equivalentes: o grupo e avaliado pelo total (SAP 10 num codigo, PRJ 10 no outro)
+    RegTest nomes, oks, det, cnt, "SitPorQuantidade total 10/10 = ADERENTE", (SitPorQuantidade(10, 10) = "ADERENTE")
+    RegTest nomes, oks, det, cnt, "SitPorQuantidade total 0/10 = NAO ADERENTE", (SitPorQuantidade(0, 10) = "NAO ADERENTE")
+    RegTest nomes, oks, det, cnt, "SitPorQuantidade total 0/0 = ADERENTE", (SitPorQuantidade(0, 0) = "ADERENTE")
+    avT = AvaliarLinha("UC", "PARAFUSO", 10, 10, SitPorQuantidade(10, 10), False, "ODD", -50, -10)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha grupo equivalente 10/10: aderente", (avT.EhAder And Not avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "PARAFUSO", -10, -10, "ADERENTE", False, "ODD", -50, 4)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha sinal pela qtd da linha (qtdSinal)", (avT.SinalInvalido)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")

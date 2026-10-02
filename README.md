@@ -26,6 +26,9 @@ nessa lista e acumulam histórico entre rodadas:
   alertas, divergências, valor em risco, nota da base). É a fonte do
   "vs. execução anterior" nos cards do PAINEL DO GESTOR
 - `CONFIG` — parâmetros editáveis
+- `EQUIVALENCIAS` — grupos de materiais equivalentes (mesmo `GRUPO` = códigos
+  intercambiáveis). Na ANALISE SAP x PRJ, os itens do grupo no mesmo PEP4 são
+  avaliados pela soma das quantidades. Nasce com o grupo 1: `105300003` = `105300005`
 - `LOG EXECUCAO` — oculta; log da última rodada
 
 Apagar `HISTORICO KPI` não quebra nada: a próxima execução recria a aba e os cards
