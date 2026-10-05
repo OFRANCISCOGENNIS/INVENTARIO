@@ -257,7 +257,8 @@ Public Sub GerarInventario()
     Set wsBase = AcharBaseInventario(wb)
 
     If wsBase Is Nothing Then
-        MsgBox "Nenhuma aba com as colunas 'MAT LIB SAP' e 'MAT PRJ CAD' foi encontrada.", _
+        MsgBox "Nenhuma aba com as colunas 'MAT LIB SAP' (ou 'ATENDIDO SAP') e " & _
+               "'MAT PRJ CAD' (ou 'TOMBADO PROJ') foi encontrada.", _
                vbExclamation, "Analise Inventario"
         Exit Sub
     End If
@@ -3514,9 +3515,7 @@ End Sub
 Private Function AcharBaseInventario(wb As Workbook) As Worksheet
 
     Dim ws      As Worksheet
-    Dim c       As Long, lastC As Long
-    Dim h       As String
-    Dim hasSAP  As Boolean, hasPRJ As Boolean
+    Dim mp      As Object
 
     For Each ws In wb.Worksheets
         Select Case ws.Name
@@ -3524,14 +3523,10 @@ Private Function AcharBaseInventario(wb As Workbook) As Worksheet
                 ' aba de saida / apoio - ignora
             Case Else
                 If ws.UsedRange.Rows.Count > 1 Then
-                    hasSAP = False : hasPRJ = False
-                    lastC = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-                    For c = 1 To lastC
-                        h = NormStr(CStr(ws.Cells(1, c).Value))
-                        If h = "MAT LIB SAP" Then hasSAP = True
-                        If h = "MAT PRJ CAD" Then hasPRJ = True
-                    Next c
-                    If hasSAP And hasPRJ Then
+                    ' pelo mapa de colunas: aceita MAT LIB SAP / ATENDIDO SAP e
+                    ' MAT PRJ CAD / TOMBADO PROJ (layout antigo ou novo)
+                    Set mp = MapaColunas(ws)
+                    If mp.Exists("MAT LIB SAP") And mp.Exists("MAT PRJ CAD") Then
                         Set AcharBaseInventario = ws
                         Exit Function
                     End If
@@ -4176,11 +4171,59 @@ Private Function MapaColunas(wsBase As Worksheet) As Object
         End If
         Dim c As Long, h As String
         For c = 1 To lastC
-            h = NormStr(CStr(hd(1, c)))
+            h = ""
+            If Not IsError(hd(1, c)) Then h = NormStr(CStr(hd(1, c)))
             If h <> "" And Not m.Exists(h) Then m.Add h, c
         Next c
     End If
+    AplicarAliasesBase m
     Set MapaColunas = m
+End Function
+
+' Nomes de cabecalho aceitos na base alem do nome CANONICO usado pelo codigo.
+' Formato "CANONICO=ALIAS1|ALIAS2", com os aliases escritos como aparecem na
+' planilha (NormStr e aplicado na comparacao: "_" e acentos nao importam).
+' O layout novo da extracao renomeou 7 colunas; o antigo continua aceito.
+Private Function AliasesBase() As Variant
+    AliasesBase = Array( _
+        "COD MAT=MATERIAL", _
+        "DESC MAT=DESC_MATERIAL", _
+        "UND=UNIDADE", _
+        "CLASSE=CLASSE_CUSTO", _
+        "MAT LIB SAP=ATENDIDO SAP", _
+        "MAT PRJ CAD=TOMBADO PROJ", _
+        "SIT MAT=SITUACAO_DO_MATERIAL")
+End Function
+
+' Completa o mapa de colunas com os nomes canonicos: se a base nao tem o
+' canonico mas tem um alias, o canonico aponta para a coluna do alias. Assim
+' todo o modulo segue usando ColIdx(mapa, "MAT LIB SAP") com qualquer layout.
+' Se a base tiver os dois nomes, vale o canonico.
+Private Sub AplicarAliasesBase(m As Object)
+    Dim al As Variant, p() As String, alts() As String, k As Long, a As String
+    For Each al In AliasesBase()
+        p = Split(CStr(al), "=")
+        If Not m.Exists(p(0)) Then
+            alts = Split(p(1), "|")
+            For k = 0 To UBound(alts)
+                a = NormStr(alts(k))
+                If m.Exists(a) Then m.Add p(0), m(a) : Exit For
+            Next k
+        End If
+    Next al
+End Sub
+
+' Nome da coluna para mensagens ao usuario: "MAT LIB SAP (ou ATENDIDO SAP)".
+Private Function NomeColunaBase(ByVal canonico As String) As String
+    NomeColunaBase = canonico
+    Dim al As Variant, p() As String
+    For Each al In AliasesBase()
+        p = Split(CStr(al), "=")
+        If p(0) = canonico Then
+            NomeColunaBase = canonico & " (ou " & Replace(p(1), "|", " / ") & ")"
+            Exit Function
+        End If
+    Next al
 End Function
 
 ' Indice da coluna pelo nome; 0 quando a coluna nao existe na base (os chamadores
@@ -4198,7 +4241,9 @@ Private Function ValidarBase(wsBase As Worksheet) As String
     Dim have As Object : Set have = MapaColunas(wsBase)
     Dim falta As String, i As Long
     For i = 0 To UBound(req)
-        If Not have.Exists(CStr(req(i))) Then falta = falta & IIf(falta <> "", ", ", "") & req(i)
+        If Not have.Exists(CStr(req(i))) Then
+            falta = falta & IIf(falta <> "", ", ", "") & NomeColunaBase(CStr(req(i)))
+        End If
     Next i
     ValidarBase = falta
 End Function
@@ -5053,6 +5098,19 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "AvaliarLinha grupo equivalente 10/10: aderente", (avT.EhAder And Not avT.ReprovaLinha)
     avT = AvaliarLinha("UC", "PARAFUSO", -10, -10, "ADERENTE", False, "ODD", -50, 4)
     RegTest nomes, oks, det, cnt, "AvaliarLinha sinal pela qtd da linha (qtdSinal)", (avT.SinalInvalido)
+    ' Cabecalho do layout novo da extracao resolve para os nomes canonicos:
+    Dim mt As Object : Set mt = CreateObject("Scripting.Dictionary")
+    mt.Add NormStr("MATERIAL"), 5 : mt.Add NormStr("ATENDIDO SAP"), 9
+    mt.Add NormStr("TOMBADO PROJ"), 10 : mt.Add NormStr("SITUACAO_DO_MATERIAL"), 13
+    AplicarAliasesBase mt
+    RegTest nomes, oks, det, cnt, "Alias MATERIAL -> COD MAT", (ColIdx(mt, "COD MAT") = 5)
+    RegTest nomes, oks, det, cnt, "Alias ATENDIDO SAP -> MAT LIB SAP", (ColIdx(mt, "MAT LIB SAP") = 9)
+    RegTest nomes, oks, det, cnt, "Alias TOMBADO PROJ -> MAT PRJ CAD", (ColIdx(mt, "MAT PRJ CAD") = 10)
+    RegTest nomes, oks, det, cnt, "Alias SITUACAO_DO_MATERIAL -> SIT MAT", (ColIdx(mt, "SIT MAT") = 13)
+    Dim mt2 As Object : Set mt2 = CreateObject("Scripting.Dictionary")
+    mt2.Add "MAT LIB SAP", 3 : mt2.Add "ATENDIDO SAP", 9
+    AplicarAliasesBase mt2
+    RegTest nomes, oks, det, cnt, "Alias: com os dois nomes, vale o canonico", (ColIdx(mt2, "MAT LIB SAP") = 3)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
