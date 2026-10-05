@@ -28,8 +28,9 @@ nessa lista e acumulam histórico entre rodadas:
 - `CONFIG` — parâmetros editáveis
 - `EQUIVALENCIAS` — materiais equivalentes, no layout `COD MAT | DESC MAT | UND |
   TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA` (mesmo número em
-  `EQUIVALENCIA` = códigos intercambiáveis). Na ANALISE SAP x PRJ, os itens do grupo
-  no mesmo PEP4 são avaliados pela soma das quantidades. Nasce com os grupos 1–5
+  `EQUIVALENCIA` = códigos intercambiáveis). Na ANALISE SAP x PRJ, quando 2+ códigos
+  do grupo aparecem no mesmo PEP4, todos ficam ADERENTE (cada linha mantém o próprio
+  código e descrição; o MOTIVO cita os dois). Nasce com os grupos 1–5
   da área e o grupo 6 (`105300003` = `105300005`); a aba do layout antigo
   (`GRUPO | COD MAT`) é migrada uma vez, mantendo as linhas acrescentadas pelo usuário
 - `LOG EXECUCAO` — oculta; log da última rodada
