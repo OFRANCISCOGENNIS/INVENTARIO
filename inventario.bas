@@ -3988,45 +3988,99 @@ Private Sub GravarLog(wb As Workbook)
 End Sub
 
 ' --------- Materiais equivalentes (aba EQUIVALENCIAS) ---------
-' Codigos com o mesmo GRUPO sao intercambiaveis: na ANALISE SAP x PRJ, os itens
-' do grupo no mesmo PEP4 sao avaliados pela SOMA das quantidades (SAP baixou
-' um codigo e o projeto previu o outro = aderente). A aba e mantida pelo
-' usuario e nao e recriada; na primeira execucao nasce com o par inicial.
+' Codigos com o mesmo numero em EQUIVALENCIA sao intercambiaveis: na ANALISE
+' SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela SOMA das
+' quantidades (SAP baixou um codigo e o projeto previu o outro = aderente).
+' A aba e mantida pelo usuario e nao e recriada; nasce com a lista padrao.
+' Layout (o da tabela da area, colunas localizadas pelo cabecalho):
+'   COD MAT | DESC MAT | UND | TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA
+' So COD MAT e EQUIVALENCIA sao lidas; as demais sao informativas.
 Private Sub GarantirEquivalencias(wb As Workbook)
     Set mEquiv = CreateObject("Scripting.Dictionary")
     Set mEquivLista = CreateObject("Scripting.Dictionary")
+
+    ' lista padrao: COD | DESC | UND | TIPO | FAMILIA | EQUIVALENCIA
+    Dim df As Variant
+    df = Array( _
+        Array("105000058", "CH SEC 1P VHI 15KV 630A 12,5KA RD PDE", "UN", "UC", "CH SU FACA", "1"), _
+        Array("105000029", "CH SEC BYPAS 1F 13,8KV 630A 16KA", "UN", "UC", "CH SU FACA", "1"), _
+        Array("102210080", "TP IND 15KV 1,2P75 500VA G1 EXT PDE", "UN", "UC", "TP_TC", "2"), _
+        Array("102310194", "TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO", "UN", "UC", "TP_TC", "2"), _
+        Array("105010022", "CH SEC 1P VHI 36,2KV 630A 12,5KA RD PDE", "UN", "UC", "CH SU FACA", "3"), _
+        Array("105010003", "CH SEC BYPAS 1P 34,5KV 630A 16KA", "UN", "UC", "CH SU FACA", "3"), _
+        Array("102100066", "TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE", "UN", "UC", "TRAFO", "4"), _
+        Array("102100387", "TD,3P,13.8-0.38/0.22kV,112.5KVA,BLQ", "UN", "UC", "TRAFO", "4"), _
+        Array("133000038", "POSTE CONC DT B-1,5 12M 1000DAN PDE", "UN", "UC", "POSTE RD", "5"), _
+        Array("133000150", "POSTE DT CONC B AUTO ATER 12M 1000DAN", "UN", "UC", "POSTE RD", "5"), _
+        Array("105300003", "", "", "", "", "6"), _
+        Array("105300005", "", "", "", "", "6") _
+    )
+    Dim linhas As Collection : Set linhas = New Collection
+    Dim jaPadrao As Object : Set jaPadrao = CreateObject("Scripting.Dictionary")
+    Dim j As Long
+    For j = 0 To UBound(df)
+        linhas.Add df(j)
+        jaPadrao(CStr(df(j)(0))) = True
+    Next j
 
     Dim ws As Worksheet
     On Error Resume Next
     Set ws = wb.Worksheets("EQUIVALENCIAS")
     On Error GoTo 0
-    If ws Is Nothing Then
+
+    Dim montar As Boolean : montar = ws Is Nothing
+    If Not ws Is Nothing Then
+        ' Migracao unica do layout antigo (A = GRUPO, B = COD MAT, C = DESCRICAO):
+        ' a aba vira o layout novo com a lista padrao; linhas que o usuario tinha
+        ' acrescentado sao mantidas, renumeradas a partir de 7 para nao se
+        ' fundirem com os grupos 1-6 da lista padrao.
+        If NormStr(CStr(ws.Cells(1, 1).Value)) = "GRUPO" Then
+            Dim novoGrp As Object : Set novoGrp = CreateObject("Scripting.Dictionary")
+            Dim prox As Long : prox = 7
+            Dim lastO As Long : lastO = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+            Dim rO As Long, gOld As String, cOld As String, dOld As String
+            For rO = 2 To lastO
+                gOld = "" : cOld = "" : dOld = ""
+                If Not IsError(ws.Cells(rO, 1).Value) Then gOld = Trim(CStr(ws.Cells(rO, 1).Value))
+                If Not IsError(ws.Cells(rO, 2).Value) Then cOld = NormCod(ws.Cells(rO, 2).Value)
+                If Not IsError(ws.Cells(rO, 3).Value) Then dOld = Trim(CStr(ws.Cells(rO, 3).Value))
+                If gOld <> "" And cOld <> "" And Not jaPadrao.Exists(cOld) Then
+                    If Not novoGrp.Exists(gOld) Then novoGrp.Add gOld, CStr(prox) : prox = prox + 1
+                    linhas.Add Array(cOld, dOld, "", "", "", novoGrp(gOld))
+                End If
+            Next rO
+            ws.Cells.Clear
+            montar = True
+            LogAdd "EQUIVALENCIAS: aba migrada para o layout novo (" & linhas.Count & " codigo(s))"
+        End If
+    Else
         Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
         ws.Name = "EQUIVALENCIAS"
-        ws.Columns(2).NumberFormat = "@"       ' codigo como texto (sem notacao cientifica)
-        ws.Cells(1, 1).Value = "GRUPO"
-        ws.Cells(1, 2).Value = "COD MAT"
-        ws.Cells(1, 3).Value = "DESCRICAO"
-        ws.Cells(2, 1).Value = "1" : ws.Cells(2, 2).Value = "105300003"
-        ws.Cells(3, 1).Value = "1" : ws.Cells(3, 2).Value = "105300005"
-        With ws.Range("A1:C1")
-            .Font.Bold = True : .Font.Color = RGB(255, 255, 255)
-            .Interior.Color = RGB(17, 24, 39) : .HorizontalAlignment = xlCenter
-        End With
-        ws.Cells(1, 5).Value = "Codigos com o mesmo GRUPO sao equivalentes: na ANALISE " & _
-            "SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela soma das quantidades."
-        ws.Cells(1, 5).Font.Italic = True : ws.Cells(1, 5).Font.Color = RGB(110, 118, 130)
-        ws.Columns(1).ColumnWidth = 10 : ws.Columns(2).ColumnWidth = 16
-        ws.Columns(3).ColumnWidth = 46
-        ws.Tab.Color = RGB(90, 90, 90)
+    End If
+    If montar Then EscreverEquivalencias ws, linhas
+
+    ' ---- leitura: colunas pelo cabecalho ----
+    Dim cCod As Long, cGrp As Long, c As Long, hN As String
+    For c = 1 To 20
+        If Not IsError(ws.Cells(1, c).Value) Then
+            hN = NormStr(CStr(ws.Cells(1, c).Value))
+            If hN = "COD MAT" And cCod = 0 Then cCod = c
+            If hN = "EQUIVALENCIA" And cGrp = 0 Then cGrp = c
+        End If
+    Next c
+    If cCod = 0 Or cGrp = 0 Then
+        LogAdd "EQUIVALENCIAS: cabecalho sem COD MAT/EQUIVALENCIA - equivalencias ignoradas"
+        mFalhas = mFalhas & vbCrLf & "  - EQUIVALENCIAS (aviso): cabecalho sem as colunas " & _
+                  "COD MAT e EQUIVALENCIA - nenhuma equivalencia aplicada"
+        Exit Sub
     End If
 
-    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, cCod).End(xlUp).Row
     Dim r As Long, grp As String, cod As String
     For r = 2 To lastR
         grp = "" : cod = ""
-        If Not IsError(ws.Cells(r, 1).Value) Then grp = Trim(CStr(ws.Cells(r, 1).Value))
-        If Not IsError(ws.Cells(r, 2).Value) Then cod = NormCod(ws.Cells(r, 2).Value)
+        If Not IsError(ws.Cells(r, cGrp).Value) Then grp = Trim(CStr(ws.Cells(r, cGrp).Value))
+        If Not IsError(ws.Cells(r, cCod).Value) Then cod = NormCod(ws.Cells(r, cCod).Value)
         If grp <> "" And cod <> "" And Not mEquiv.Exists(cod) Then
             mEquiv.Add cod, grp
             If mEquivLista.Exists(grp) Then
@@ -4037,6 +4091,42 @@ Private Sub GarantirEquivalencias(wb As Workbook)
         End If
     Next r
     LogAdd "EQUIVALENCIAS: " & mEquiv.Count & " codigo(s) em " & mEquivLista.Count & " grupo(s)"
+End Sub
+
+' Escreve a aba EQUIVALENCIAS no layout da tabela da area. linhas: cada item e
+' Array(COD, DESC, UND, TIPO, FAMILIA, EQUIVALENCIA); "PAR" marca a 1a linha
+' de cada grupo, como na tabela de origem.
+Private Sub EscreverEquivalencias(ws As Worksheet, linhas As Collection)
+    Dim h As Variant
+    h = Array("COD MAT", "DESC MAT", "UND", "TIPO", "FAMILIA", "EQUIVALENCIA", "PAR DE EQUIVALENCIA")
+    ws.Columns(1).NumberFormat = "@"           ' codigo como texto (sem notacao cientifica)
+    Dim c As Long
+    For c = 1 To 7
+        ws.Cells(1, c).Value = h(c - 1)
+    Next c
+    With ws.Range("A1:G1")
+        .Font.Bold = True : .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(17, 24, 39) : .HorizontalAlignment = xlCenter
+    End With
+    Dim r As Long : r = 1
+    Dim it As Variant, grpAnt As String
+    For Each it In linhas
+        r = r + 1
+        For c = 0 To 5
+            ws.Cells(r, c + 1).Value = it(c)
+        Next c
+        If CStr(it(5)) <> grpAnt Then ws.Cells(r, 7).Value = "PAR"
+        grpAnt = CStr(it(5))
+    Next it
+    ws.Range(ws.Cells(2, 6), ws.Cells(r, 7)).HorizontalAlignment = xlCenter
+    ws.Cells(1, 9).Value = "Codigos com o mesmo numero em EQUIVALENCIA sao equivalentes: na ANALISE " & _
+        "SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela soma das quantidades."
+    ws.Cells(1, 9).Font.Italic = True : ws.Cells(1, 9).Font.Color = RGB(110, 118, 130)
+    ws.Columns(1).ColumnWidth = 13 : ws.Columns(2).ColumnWidth = 44
+    ws.Columns(3).ColumnWidth = 6 : ws.Columns(4).ColumnWidth = 6
+    ws.Columns(5).ColumnWidth = 14 : ws.Columns(6).ColumnWidth = 14
+    ws.Columns(7).ColumnWidth = 22
+    ws.Tab.Color = RGB(90, 90, 90)
 End Sub
 
 ' Chave "PEP4|GRUPO" da linha da base quando o material esta em um grupo de
