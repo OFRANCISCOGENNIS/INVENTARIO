@@ -30,9 +30,11 @@ nessa lista e acumulam histórico entre rodadas:
   TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA` (mesmo número em
   `EQUIVALENCIA` = códigos intercambiáveis). Na ANALISE SAP x PRJ, quando 2+ códigos
   do grupo aparecem no mesmo PEP4, todos ficam ADERENTE (cada linha mantém o próprio
-  código e descrição; o MOTIVO cita os dois). Nasce com os grupos 1–5
-  da área e o grupo 6 (`105300003` = `105300005`); a aba do layout antigo
-  (`GRUPO | COD MAT`) é migrada uma vez, mantendo as linhas acrescentadas pelo usuário
+  código e descrição; o MOTIVO cita os dois). Um código em dois grupos une os grupos.
+  Nasce com a lista padrão da área (grupos 1–12, sem o 10, que repetia o 8) e o
+  grupo 13 (`105300003` = `105300005`). A aba é do usuário: a macro só acrescenta
+  grupos de versões novas da lista padrão (versão guardada no nome oculto
+  `EQUIV_VERSAO`), sem repetir códigos nem reinserir o que foi apagado
 - `LOG EXECUCAO` — oculta; log da última rodada
 
 Apagar `HISTORICO KPI` não quebra nada: a próxima execução recria a aba e os cards

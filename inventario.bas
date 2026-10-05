@@ -36,6 +36,11 @@ Private mAlCap As Long
 ' recriadas a cada rodada, senao o historico se perderia.
 Private Const ABA_KPI As String = "HISTORICO KPI"
 
+' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
+' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
+' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
+Private Const EQUIV_VERSAO_ATUAL As Long = 2
+
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
 ' exibicao de SIT MAT/APROVACAO/MOTIVO (loop 2) em ProcessarSAPxPRJ.
@@ -3997,85 +4002,112 @@ End Sub
 
 ' --------- Materiais equivalentes (aba EQUIVALENCIAS) ---------
 ' Codigos com o mesmo numero em EQUIVALENCIA sao intercambiaveis: na ANALISE
-' SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela SOMA das
-' quantidades (SAP baixou um codigo e o projeto previu o outro = aderente).
-' A aba e mantida pelo usuario e nao e recriada; nasce com a lista padrao.
+' SAP x PRJ, quando 2+ codigos do grupo aparecem no mesmo PEP4, todos ficam
+' ADERENTE. Um codigo em dois grupos une os grupos (equivalencia transitiva).
+' A aba e mantida pelo usuario; a macro so acrescenta grupos de versoes novas
+' da lista padrao (EquivPadrao).
 ' Layout (o da tabela da area, colunas localizadas pelo cabecalho):
 '   COD MAT | DESC MAT | UND | TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA
 ' So COD MAT e EQUIVALENCIA sao lidas; as demais sao informativas.
+
+' Lista padrao, uma linha por codigo:
+'   COD | DESC | UND | TIPO | FAMILIA | EQUIVALENCIA | VERSAO em que entrou
+' (Collection, e nao Array com "_": o VBA limita a 24 continuacoes de linha.)
+Private Function EquivPadrao() As Collection
+    Dim c As Collection : Set c = New Collection
+    ' versao 1
+    c.Add Split("105000058|CH SEC 1P VHI 15KV 630A 12,5KA RD PDE|UN|UC|CH SU FACA|1|1", "|")
+    c.Add Split("105000029|CH SEC BYPAS 1F 13,8KV 630A 16KA|UN|UC|CH SU FACA|1|1", "|")
+    c.Add Split("102210080|TP IND 15KV 1,2P75 500VA G1 EXT PDE|UN|UC|TP_TC|2|1", "|")
+    c.Add Split("102310194|TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO|UN|UC|TP_TC|2|1", "|")
+    c.Add Split("105010022|CH SEC 1P VHI 36,2KV 630A 12,5KA RD PDE|UN|UC|CH SU FACA|3|1", "|")
+    c.Add Split("105010003|CH SEC BYPAS 1P 34,5KV 630A 16KA|UN|UC|CH SU FACA|3|1", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|4|1", "|")
+    c.Add Split("102100387|TD,3P,13.8-0.38/0.22kV,112.5KVA,BLQ|UN|UC|TRAFO|4|1", "|")
+    c.Add Split("133000038|POSTE CONC DT B-1,5 12M 1000DAN PDE|UN|UC|POSTE RD|5|1", "|")
+    c.Add Split("133000150|POSTE DT CONC B AUTO ATER 12M 1000DAN|UN|UC|POSTE RD|5|1", "|")
+    ' versao 2 (o grupo 10 da tabela da area repete o 8 e ficou de fora; o 11
+    ' compartilha 102310194 com o 2 e e unido a ele na leitura)
+    c.Add Split("105310001|CHAVE FUS C POR/POL 34,5KV 100A 5KA PDE|UN|UC|CH FUS|6|2", "|")
+    c.Add Split("105310008|CHAVE FUS DT C POL 34,5KV 100A 5KA PDE|UN|UC|CH FUS|6|2", "|")
+    c.Add Split("102110399|TD,3P,34.5-0.38/0.22kV,112.5KVA,BLQ|UN|UC|TRAFO|7|2", "|")
+    c.Add Split("102110065|TRAFO DT 3F 34,5KV 112,5KVA 380/220V OV|UN|UC|TRAFO|7|2", "|")
+    c.Add Split("102100149|TRAFO DT 1F 13,8 FN 37,5KVA 440/220(M)OV|UN|UC|TRAFO|8|2", "|")
+    c.Add Split("102100175|TRAFO DT 1F 13,8KV FN 37,5KVA 220V OV|UN|UC|TRAFO|8|2", "|")
+    c.Add Split("102100160|TD 1F FN 13,8KV 10KVA 220V 3T OV PDE|UN|UC|TRAFO|9|2", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|9|2", "|")
+    c.Add Split("102310194|TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO|UN|UC|TP_TC|11|2", "|")
+    c.Add Split("102210093|TP,17,5KV,USO EXTERNO,TIPO GSCT004/1,BLQ|UN|UC|TP_TC|11|2", "|")
+    c.Add Split("133000036|POSTE CONC DT B 12M 600DAN PDE|UN|UC|POSTE RD|12|2", "|")
+    c.Add Split("133000149|POSTE DT CONC B AUTO ATER 12M 600DAN|UN|UC|POSTE RD|12|2", "|")
+    ' versao 1, renumerado na 2: nasceu no grupo 6, que a tabela da area usa
+    c.Add Split("105300003|||||13|1", "|")
+    c.Add Split("105300005|||||13|1", "|")
+    Set EquivPadrao = c
+End Function
+
 Private Sub GarantirEquivalencias(wb As Workbook)
     Set mEquiv = CreateObject("Scripting.Dictionary")
     Set mEquivLista = CreateObject("Scripting.Dictionary")
 
-    ' lista padrao: COD | DESC | UND | TIPO | FAMILIA | EQUIVALENCIA
-    Dim df As Variant
-    df = Array( _
-        Array("105000058", "CH SEC 1P VHI 15KV 630A 12,5KA RD PDE", "UN", "UC", "CH SU FACA", "1"), _
-        Array("105000029", "CH SEC BYPAS 1F 13,8KV 630A 16KA", "UN", "UC", "CH SU FACA", "1"), _
-        Array("102210080", "TP IND 15KV 1,2P75 500VA G1 EXT PDE", "UN", "UC", "TP_TC", "2"), _
-        Array("102310194", "TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO", "UN", "UC", "TP_TC", "2"), _
-        Array("105010022", "CH SEC 1P VHI 36,2KV 630A 12,5KA RD PDE", "UN", "UC", "CH SU FACA", "3"), _
-        Array("105010003", "CH SEC BYPAS 1P 34,5KV 630A 16KA", "UN", "UC", "CH SU FACA", "3"), _
-        Array("102100066", "TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE", "UN", "UC", "TRAFO", "4"), _
-        Array("102100387", "TD,3P,13.8-0.38/0.22kV,112.5KVA,BLQ", "UN", "UC", "TRAFO", "4"), _
-        Array("133000038", "POSTE CONC DT B-1,5 12M 1000DAN PDE", "UN", "UC", "POSTE RD", "5"), _
-        Array("133000150", "POSTE DT CONC B AUTO ATER 12M 1000DAN", "UN", "UC", "POSTE RD", "5"), _
-        Array("105300003", "", "", "", "", "6"), _
-        Array("105300005", "", "", "", "", "6") _
-    )
-    Dim linhas As Collection : Set linhas = New Collection
+    Dim padrao As Collection : Set padrao = EquivPadrao()
+    Dim it As Variant, maxPad As Long
     Dim jaPadrao As Object : Set jaPadrao = CreateObject("Scripting.Dictionary")
-    Dim j As Long
-    For j = 0 To UBound(df)
-        linhas.Add df(j)
-        jaPadrao(CStr(df(j)(0))) = True
-    Next j
+    For Each it In padrao
+        jaPadrao(CStr(it(0))) = True
+        If Val(it(5)) > maxPad Then maxPad = Val(it(5))
+    Next it
 
     Dim ws As Worksheet
     On Error Resume Next
     Set ws = wb.Worksheets("EQUIVALENCIAS")
     On Error GoTo 0
+    Dim ver As Long : ver = 0
+    On Error Resume Next
+    ver = CLng(Mid(wb.Names("EQUIV_VERSAO").RefersTo, 2))
+    On Error GoTo 0
 
-    Dim montar As Boolean : montar = ws Is Nothing
-    If Not ws Is Nothing Then
-        ' Migracao unica do layout antigo (A = GRUPO, B = COD MAT, C = DESCRICAO):
-        ' a aba vira o layout novo com a lista padrao; linhas que o usuario tinha
-        ' acrescentado sao mantidas, renumeradas a partir de 7 para nao se
-        ' fundirem com os grupos 1-6 da lista padrao.
-        If NormStr(CStr(ws.Cells(1, 1).Value)) = "GRUPO" Then
-            Dim novoGrp As Object : Set novoGrp = CreateObject("Scripting.Dictionary")
-            Dim prox As Long : prox = 7
-            Dim lastO As Long : lastO = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
-            Dim rO As Long, gOld As String, cOld As String, dOld As String
-            For rO = 2 To lastO
-                gOld = "" : cOld = "" : dOld = ""
-                If Not IsError(ws.Cells(rO, 1).Value) Then gOld = Trim(CStr(ws.Cells(rO, 1).Value))
-                If Not IsError(ws.Cells(rO, 2).Value) Then cOld = NormCod(ws.Cells(rO, 2).Value)
-                If Not IsError(ws.Cells(rO, 3).Value) Then dOld = Trim(CStr(ws.Cells(rO, 3).Value))
-                If gOld <> "" And cOld <> "" And Not jaPadrao.Exists(cOld) Then
-                    If Not novoGrp.Exists(gOld) Then novoGrp.Add gOld, CStr(prox) : prox = prox + 1
-                    linhas.Add Array(cOld, dOld, "", "", "", novoGrp(gOld))
-                End If
-            Next rO
-            ws.Cells.Clear
-            montar = True
-            LogAdd "EQUIVALENCIAS: aba migrada para o layout novo (" & linhas.Count & " codigo(s))"
-        End If
-    Else
+    If ws Is Nothing Then
         Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
         ws.Name = "EQUIVALENCIAS"
+        EscreverEquivalencias ws, padrao
+    ElseIf NormStr(CStr(ws.Cells(1, 1).Value)) = "GRUPO" Then
+        ' Migracao unica do layout antigo (A = GRUPO, B = COD MAT, C = DESCRICAO):
+        ' a aba vira o layout novo com a lista padrao; linhas que o usuario tinha
+        ' acrescentado sao mantidas, renumeradas depois do ultimo grupo padrao
+        ' para nao se fundirem com eles.
+        Dim linhas As Collection : Set linhas = New Collection
+        For Each it In padrao
+            linhas.Add it
+        Next it
+        Dim novoGrp As Object : Set novoGrp = CreateObject("Scripting.Dictionary")
+        Dim prox As Long : prox = maxPad + 1
+        Dim lastO As Long : lastO = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+        Dim rO As Long, gOld As String, cOld As String, dOld As String
+        For rO = 2 To lastO
+            gOld = "" : cOld = "" : dOld = ""
+            If Not IsError(ws.Cells(rO, 1).Value) Then gOld = Trim(CStr(ws.Cells(rO, 1).Value))
+            If Not IsError(ws.Cells(rO, 2).Value) Then cOld = NormCod(ws.Cells(rO, 2).Value)
+            If Not IsError(ws.Cells(rO, 3).Value) Then dOld = Trim(CStr(ws.Cells(rO, 3).Value))
+            If gOld <> "" And cOld <> "" And Not jaPadrao.Exists(cOld) Then
+                If Not novoGrp.Exists(gOld) Then novoGrp.Add gOld, CStr(prox) : prox = prox + 1
+                linhas.Add Array(cOld, dOld, "", "", "", novoGrp(gOld), "0")
+            End If
+        Next rO
+        ws.Cells.Clear
+        EscreverEquivalencias ws, linhas
+        LogAdd "EQUIVALENCIAS: aba migrada para o layout novo (" & linhas.Count & " codigo(s))"
+    ElseIf ver < EQUIV_VERSAO_ATUAL Then
+        ' aba sem marcador = criada pela versao 1 da lista
+        AtualizarEquivalencias ws, padrao, IIf(ver = 0, 1, ver)
     End If
-    If montar Then EscreverEquivalencias ws, linhas
+    On Error Resume Next
+    wb.Names.Add Name:="EQUIV_VERSAO", RefersTo:="=" & EQUIV_VERSAO_ATUAL, Visible:=False
+    On Error GoTo 0
 
     ' ---- leitura: colunas pelo cabecalho ----
-    Dim cCod As Long, cGrp As Long, c As Long, hN As String
-    For c = 1 To 20
-        If Not IsError(ws.Cells(1, c).Value) Then
-            hN = NormStr(CStr(ws.Cells(1, c).Value))
-            If hN = "COD MAT" And cCod = 0 Then cCod = c
-            If hN = "EQUIVALENCIA" And cGrp = 0 Then cGrp = c
-        End If
-    Next c
+    Dim cCod As Long, cGrp As Long
+    ColunasEquiv ws, cCod, cGrp
     If cCod = 0 Or cGrp = 0 Then
         LogAdd "EQUIVALENCIAS: cabecalho sem COD MAT/EQUIVALENCIA - equivalencias ignoradas"
         mFalhas = mFalhas & vbCrLf & "  - EQUIVALENCIAS (aviso): cabecalho sem as colunas " & _
@@ -4083,31 +4115,156 @@ Private Sub GarantirEquivalencias(wb As Workbook)
         Exit Sub
     End If
 
+    ' Codigo em dois grupos une os grupos (union-find por numero de grupo):
+    ' 102310194 nos grupos 2 e 11 deixa os tres TPs equivalentes entre si.
+    Dim pai As Object : Set pai = CreateObject("Scripting.Dictionary")   ' grupo -> grupo pai
+    Dim codG As Object : Set codG = CreateObject("Scripting.Dictionary")  ' cod -> 1o grupo
     Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, cCod).End(xlUp).Row
-    Dim r As Long, grp As String, cod As String
+    Dim r As Long, grp As String, cod As String, ga As String, gb As String
     For r = 2 To lastR
         grp = "" : cod = ""
         If Not IsError(ws.Cells(r, cGrp).Value) Then grp = Trim(CStr(ws.Cells(r, cGrp).Value))
         If Not IsError(ws.Cells(r, cCod).Value) Then cod = NormCod(ws.Cells(r, cCod).Value)
-        If grp <> "" And cod <> "" And Not mEquiv.Exists(cod) Then
-            mEquiv.Add cod, grp
-            If mEquivLista.Exists(grp) Then
-                mEquivLista(grp) = mEquivLista(grp) & " = " & cod
+        If grp <> "" And cod <> "" Then
+            If Not pai.Exists(grp) Then pai.Add grp, grp
+            If codG.Exists(cod) Then
+                ga = RaizGrupo(pai, CStr(codG(cod))) : gb = RaizGrupo(pai, grp)
+                If ga <> gb Then
+                    pai(gb) = ga
+                    LogAdd "EQUIVALENCIAS: grupos " & ga & " e " & gb & " unidos (codigo " & cod & " nos dois)"
+                End If
             Else
-                mEquivLista.Add grp, cod
+                codG.Add cod, grp
             End If
         End If
     Next r
+    Dim k As Variant, gR As String
+    For Each k In codG.Keys
+        gR = RaizGrupo(pai, CStr(codG(k)))
+        mEquiv.Add k, gR
+        If mEquivLista.Exists(gR) Then
+            mEquivLista(gR) = mEquivLista(gR) & " = " & k
+        Else
+            mEquivLista.Add gR, CStr(k)
+        End If
+    Next k
     LogAdd "EQUIVALENCIAS: " & mEquiv.Count & " codigo(s) em " & mEquivLista.Count & " grupo(s)"
 End Sub
 
+' Grupo representante (raiz) no union-find de grupos de equivalencia.
+Private Function RaizGrupo(pai As Object, ByVal g As String) As String
+    Do While CStr(pai(g)) <> g
+        g = CStr(pai(g))
+    Loop
+    RaizGrupo = g
+End Function
+
+' Colunas COD MAT e EQUIVALENCIA da aba EQUIVALENCIAS (0 quando ausentes).
+Private Sub ColunasEquiv(ws As Worksheet, ByRef cCod As Long, ByRef cGrp As Long)
+    Dim c As Long, hN As String
+    cCod = 0 : cGrp = 0
+    For c = 1 To 20
+        If Not IsError(ws.Cells(1, c).Value) Then
+            hN = NormStr(CStr(ws.Cells(1, c).Value))
+            If hN = "COD MAT" And cCod = 0 Then cCod = c
+            If hN = "EQUIVALENCIA" And cGrp = 0 Then cGrp = c
+        End If
+    Next c
+End Sub
+
+' Acrescenta numa aba EQUIVALENCIAS ja existente os grupos da lista padrao de
+' versao mais nova que a da aba. Grupo com todos os codigos ja cadastrados e
+' pulado; numero de grupo ja usado por outros codigos vira o proximo livre.
+Private Sub AtualizarEquivalencias(ws As Worksheet, padrao As Collection, ByVal verAba As Long)
+    Dim cCod As Long, cGrp As Long
+    ColunasEquiv ws, cCod, cGrp
+    If cCod = 0 Or cGrp = 0 Then Exit Sub
+
+    ' o que a aba ja tem: codigos e codigos por grupo
+    Dim temCod As Object : Set temCod = CreateObject("Scripting.Dictionary")
+    Dim grpCods As Object : Set grpCods = CreateObject("Scripting.Dictionary")
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, cCod).End(xlUp).Row
+    Dim r As Long, g As String, cod As String, maxG As Long
+    For r = 2 To lastR
+        g = "" : cod = ""
+        If Not IsError(ws.Cells(r, cGrp).Value) Then g = Trim(CStr(ws.Cells(r, cGrp).Value))
+        If Not IsError(ws.Cells(r, cCod).Value) Then cod = NormCod(ws.Cells(r, cCod).Value)
+        If cod <> "" Then temCod(cod) = True
+        If g <> "" Then
+            If Not grpCods.Exists(g) Then grpCods.Add g, CreateObject("Scripting.Dictionary")
+            If cod <> "" Then grpCods(g).Item(cod) = True
+            If Val(g) > maxG Then maxG = Val(g)
+        End If
+    Next r
+
+    ' versao 1 -> 2: o par 105300003 = 105300005 nasceu no grupo 6, que a tabela
+    ' da area usa para CHAVE FUS. Se o grupo 6 ainda e exatamente esse par, vai
+    ' para o 13 (o numero dele na lista padrao atual).
+    If verAba < 2 And grpCods.Exists("6") Then
+        If grpCods("6").Count = 2 Then
+            If grpCods("6").Exists("105300003") And grpCods("6").Exists("105300005") Then
+                ' 13 ja usado pelo usuario: vai para o proximo numero livre
+                Dim g13 As String : g13 = "13"
+                If grpCods.Exists(g13) Then maxG = maxG + 1 : g13 = CStr(maxG)
+                For r = 2 To lastR
+                    If Not IsError(ws.Cells(r, cGrp).Value) Then
+                        If Trim(CStr(ws.Cells(r, cGrp).Value)) = "6" Then ws.Cells(r, cGrp).Value = CLng(g13)
+                    End If
+                Next r
+                grpCods.Add g13, grpCods("6")
+                grpCods.Remove "6"
+                If Val(g13) > maxG Then maxG = Val(g13)
+                LogAdd "EQUIVALENCIAS: par 105300003 = 105300005 movido do grupo 6 para o " & g13
+            End If
+        End If
+    End If
+
+    ' grupos novos (versao > aba), na ordem da lista padrao
+    Dim novos As Object : Set novos = CreateObject("Scripting.Dictionary")   ' grupo -> Collection
+    Dim it As Variant
+    For Each it In padrao
+        If CLng(it(6)) > verAba Then
+            If Not novos.Exists(CStr(it(5))) Then novos.Add CStr(it(5)), New Collection
+            novos(CStr(it(5))).Add it
+        End If
+    Next it
+
+    Dim gk As Variant, todos As Boolean, gDest As String, primeiro As Boolean, nAdd As Long
+    For Each gk In novos.Keys
+        todos = True
+        For Each it In novos(gk)
+            If Not temCod.Exists(CStr(it(0))) Then todos = False
+        Next it
+        If todos Then
+            LogAdd "EQUIVALENCIAS: grupo padrao " & gk & " ja cadastrado - pulado"
+        Else
+            gDest = CStr(gk)
+            If grpCods.Exists(gDest) Then
+                maxG = maxG + 1 : gDest = CStr(maxG)
+                LogAdd "EQUIVALENCIAS: grupo padrao " & gk & " ja usado na aba - gravado como " & gDest
+            End If
+            If Val(gDest) > maxG Then maxG = Val(gDest)
+            grpCods.Add gDest, CreateObject("Scripting.Dictionary")
+            primeiro = True
+            For Each it In novos(gk)
+                lastR = lastR + 1
+                EscreverLinhaEquiv ws, lastR, it, gDest, primeiro
+                primeiro = False
+                temCod(CStr(it(0))) = True
+                nAdd = nAdd + 1
+            Next it
+        End If
+    Next gk
+    LogAdd "EQUIVALENCIAS: lista padrao v" & verAba & " -> v" & EQUIV_VERSAO_ATUAL & _
+           ", " & nAdd & " codigo(s) acrescentado(s)"
+End Sub
+
 ' Escreve a aba EQUIVALENCIAS no layout da tabela da area. linhas: cada item e
-' Array(COD, DESC, UND, TIPO, FAMILIA, EQUIVALENCIA); "PAR" marca a 1a linha
-' de cada grupo, como na tabela de origem.
+' (COD, DESC, UND, TIPO, FAMILIA, EQUIVALENCIA, VERSAO); "PAR" marca a 1a
+' linha de cada grupo, como na tabela de origem.
 Private Sub EscreverEquivalencias(ws As Worksheet, linhas As Collection)
     Dim h As Variant
     h = Array("COD MAT", "DESC MAT", "UND", "TIPO", "FAMILIA", "EQUIVALENCIA", "PAR DE EQUIVALENCIA")
-    ws.Columns(1).NumberFormat = "@"           ' codigo como texto (sem notacao cientifica)
     Dim c As Long
     For c = 1 To 7
         ws.Cells(1, c).Value = h(c - 1)
@@ -4120,21 +4277,31 @@ Private Sub EscreverEquivalencias(ws As Worksheet, linhas As Collection)
     Dim it As Variant, grpAnt As String
     For Each it In linhas
         r = r + 1
-        For c = 0 To 5
-            ws.Cells(r, c + 1).Value = it(c)
-        Next c
-        If CStr(it(5)) <> grpAnt Then ws.Cells(r, 7).Value = "PAR"
+        EscreverLinhaEquiv ws, r, it, CStr(it(5)), (CStr(it(5)) <> grpAnt)
         grpAnt = CStr(it(5))
     Next it
-    ws.Range(ws.Cells(2, 6), ws.Cells(r, 7)).HorizontalAlignment = xlCenter
     ws.Cells(1, 9).Value = "Codigos com o mesmo numero em EQUIVALENCIA sao equivalentes: na ANALISE " & _
-        "SAP x PRJ, os itens do grupo no mesmo PEP4 sao avaliados pela soma das quantidades."
+        "SAP x PRJ, quando 2+ codigos do grupo aparecem no mesmo PEP4, todos ficam ADERENTE."
     ws.Cells(1, 9).Font.Italic = True : ws.Cells(1, 9).Font.Color = RGB(110, 118, 130)
     ws.Columns(1).ColumnWidth = 13 : ws.Columns(2).ColumnWidth = 44
     ws.Columns(3).ColumnWidth = 6 : ws.Columns(4).ColumnWidth = 6
     ws.Columns(5).ColumnWidth = 14 : ws.Columns(6).ColumnWidth = 14
     ws.Columns(7).ColumnWidth = 22
     ws.Tab.Color = RGB(90, 90, 90)
+End Sub
+
+' Uma linha da aba EQUIVALENCIAS (codigo como texto, sem notacao cientifica).
+Private Sub EscreverLinhaEquiv(ws As Worksheet, ByVal r As Long, it As Variant, _
+                               ByVal grp As String, ByVal marcaPar As Boolean)
+    Dim c As Long
+    ws.Cells(r, 1).NumberFormat = "@"
+    ws.Cells(r, 1).Value = CStr(it(0))
+    For c = 1 To 4
+        ws.Cells(r, c + 1).Value = it(c)
+    Next c
+    If IsNumeric(grp) Then ws.Cells(r, 6).Value = CLng(grp) Else ws.Cells(r, 6).Value = grp
+    If marcaPar Then ws.Cells(r, 7).Value = "PAR"
+    ws.Range(ws.Cells(r, 6), ws.Cells(r, 7)).HorizontalAlignment = xlCenter
 End Sub
 
 ' Chave "PEP4|GRUPO" da linha da base quando o material esta em um grupo de
@@ -5121,6 +5288,19 @@ Public Sub TestarLogicaInventario()
     Dim dEq As Object : Set dEq = CreateObject("Scripting.Dictionary")
     dEq.Add "105000058", "CH SEC 1P" : dEq.Add "105000029", "CH SEC BYPAS"
     RegTest nomes, oks, det, cnt, "TextoEquiv mantem os dois nomes", (TextoEquiv(dEq) = "105000058 CH SEC 1P = 105000029 CH SEC BYPAS")
+    ' Codigo em dois grupos une os grupos (2 e 11 compartilham 102310194):
+    Dim pT As Object : Set pT = CreateObject("Scripting.Dictionary")
+    pT.Add "2", "2" : pT.Add "11", "2" : pT.Add "5", "5"
+    RegTest nomes, oks, det, cnt, "RaizGrupo 11 unido ao 2 = 2", (RaizGrupo(pT, "11") = "2")
+    RegTest nomes, oks, det, cnt, "RaizGrupo 5 isolado = 5", (RaizGrupo(pT, "5") = "5")
+    ' Lista padrao: 7 campos por linha e grupos 1-13 sem o 10 (repetia o 8)
+    Dim epOk As Boolean : epOk = True
+    Dim epIt As Variant
+    For Each epIt In EquivPadrao()
+        If UBound(epIt) <> 6 Then epOk = False
+        If CStr(epIt(5)) = "10" Then epOk = False
+    Next epIt
+    RegTest nomes, oks, det, cnt, "EquivPadrao: 7 campos por linha, sem grupo 10", epOk
     avT = AvaliarLinha("UC", "PARAFUSO", -10, -10, "ADERENTE", False, "ODD", -50, 4)
     RegTest nomes, oks, det, cnt, "AvaliarLinha sinal pela qtd da linha (qtdSinal)", (avT.SinalInvalido)
     ' Cabecalho do layout novo da extracao resolve para os nomes canonicos:
