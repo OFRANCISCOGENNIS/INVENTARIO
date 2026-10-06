@@ -39,7 +39,7 @@ Private Const ABA_KPI As String = "HISTORICO KPI"
 ' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
 ' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
 ' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
-Private Const EQUIV_VERSAO_ATUAL As Long = 2
+Private Const EQUIV_VERSAO_ATUAL As Long = 3
 
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
@@ -4040,9 +4040,32 @@ Private Function EquivPadrao() As Collection
     c.Add Split("102210093|TP,17,5KV,USO EXTERNO,TIPO GSCT004/1,BLQ|UN|UC|TP_TC|11|2", "|")
     c.Add Split("133000036|POSTE CONC DT B 12M 600DAN PDE|UN|UC|POSTE RD|12|2", "|")
     c.Add Split("133000149|POSTE DT CONC B AUTO ATER 12M 600DAN|UN|UC|POSTE RD|12|2", "|")
-    ' versao 1, renumerado na 2: nasceu no grupo 6, que a tabela da area usa
-    c.Add Split("105300003|||||13|1", "|")
-    c.Add Split("105300005|||||13|1", "|")
+    ' versao 3 (13, 16, 17, 18 e 21 compartilham codigos com grupos anteriores
+    ' e sao unidos a eles na leitura: 9+16+18, 8+17, 6+21)
+    c.Add Split("102110402|TD,3P,34.5-0.38/0.22kV,75KVA,BLQ|UN|UC|TRAFO|13|3", "|")
+    c.Add Split("102110064|TRAFO DT 3F 34,5KV 75KVA 380/220V OV|UN|UC|TRAFO|13|3", "|")
+    c.Add Split("102110018|TRAFO DT 1F 34,5KV FN 10KVA 440/22(BLQ)|UN|UC|TRAFO|14|3", "|")
+    c.Add Split("102110181|TRAFO DT 1F 34,5KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|14|3", "|")
+    c.Add Split("104020017|PARA-RAIO DT POL 21KV 10KA 23,1KV PDE|UN|COM|PARA RAIO MT|15|3", "|")
+    c.Add Split("104010001|PARA-RAIOS DT POLIM 12KV 10KA 13,8KV|UN|COM|PARA RAIO MT|15|3", "|")
+    c.Add Split("102100021|TRAFO DT 1F 13,8KV FN 10KVA 440/22(BLQ)|UN|UC|TRAFO|16|3", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|16|3", "|")
+    c.Add Split("102100102|TRAFO DT 1F 13,8KV FN 37,5KVA 440/220(BQ|UN|UC|TRAFO|17|3", "|")
+    c.Add Split("102100149|TRAFO DT 1F 13,8 FN 37,5KVA 440/220(M)OV|UN|UC|TRAFO|17|3", "|")
+    c.Add Split("102100309|TD,1F,7,97-0,44/0,22kV,10KVA,4TAPs(DAN)|UN|UC|TRAFO|18|3", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|18|3", "|")
+    c.Add Split("102110020|TRAFO DT 1F 34,5KV FN 25KVA 440/220V(BQ)|UN|UC|TRAFO|19|3", "|")
+    c.Add Split("102110191|TRAFO DT 1F 34,5KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|19|3", "|")
+    c.Add Split("102100388|TD,3P,13.8-0.38/0.22kV,150KVA,GST01/606|UN|UC|TRAFO|20|3", "|")
+    c.Add Split("102100067|TRAFO DT 3F 13,8KV 150KVA 380/220V OV|UN|UC|TRAFO|20|3", "|")
+    c.Add Split("105310029|CH,FUS,36.2KV,100A,5KA,PORC,S.L,BLQ|UN|UC|CH FUS|21|3", "|")
+    c.Add Split("105310001|CHAVE FUS DT C POR 34,5KV 100A 5KA PDE|UN|UC|CH FUS|21|3", "|")
+    c.Add Split("122120026|CABO COB AL 150MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|22|3", "|")
+    c.Add Split("122120003|CABO COB AL CA 150MM2 15KV XLPE CZ (BLQ)|M|UC|COND PROT|22|3", "|")
+    ' versao 1, renumerado depois: a tabela da area passou a usar o 6 (v2) e o
+    ' 13 (v3); fica depois do ultimo grupo dela
+    c.Add Split("105300003|||||23|1", "|")
+    c.Add Split("105300005|||||23|1", "|")
     Set EquivPadrao = c
 End Function
 
@@ -4197,27 +4220,32 @@ Private Sub AtualizarEquivalencias(ws As Worksheet, padrao As Collection, ByVal 
         End If
     Next r
 
-    ' versao 1 -> 2: o par 105300003 = 105300005 nasceu no grupo 6, que a tabela
-    ' da area usa para CHAVE FUS. Se o grupo 6 ainda e exatamente esse par, vai
-    ' para o 13 (o numero dele na lista padrao atual).
-    If verAba < 2 And grpCods.Exists("6") Then
-        If grpCods("6").Count = 2 Then
-            If grpCods("6").Exists("105300003") And grpCods("6").Exists("105300005") Then
-                ' 13 ja usado pelo usuario: vai para o proximo numero livre
-                Dim g13 As String : g13 = "13"
-                If grpCods.Exists(g13) Then maxG = maxG + 1 : g13 = CStr(maxG)
+    ' O par 105300003 = 105300005 muda de numero quando a tabela da area passa a
+    ' usar o dele (6 na v1, 13 na v2). Se o grupo dele na aba ainda e exatamente
+    ' esse par e esta fora do numero atual da lista padrao, vai para esse numero
+    ' (ou para o proximo livre, se o usuario ja o usa).
+    Dim itP As Variant, gAlvo As String, gPar As Variant, gNovo As String
+    For Each itP In padrao
+        If CStr(itP(0)) = "105300003" Then gAlvo = CStr(itP(5))
+    Next itP
+    For Each gPar In grpCods.Keys
+        If CStr(gPar) <> gAlvo And grpCods(gPar).Count = 2 Then
+            If grpCods(gPar).Exists("105300003") And grpCods(gPar).Exists("105300005") Then
+                gNovo = gAlvo
+                If grpCods.Exists(gNovo) Then maxG = maxG + 1 : gNovo = CStr(maxG)
                 For r = 2 To lastR
                     If Not IsError(ws.Cells(r, cGrp).Value) Then
-                        If Trim(CStr(ws.Cells(r, cGrp).Value)) = "6" Then ws.Cells(r, cGrp).Value = CLng(g13)
+                        If Trim(CStr(ws.Cells(r, cGrp).Value)) = CStr(gPar) Then ws.Cells(r, cGrp).Value = CLng(gNovo)
                     End If
                 Next r
-                grpCods.Add g13, grpCods("6")
-                grpCods.Remove "6"
-                If Val(g13) > maxG Then maxG = Val(g13)
-                LogAdd "EQUIVALENCIAS: par 105300003 = 105300005 movido do grupo 6 para o " & g13
+                grpCods.Add gNovo, grpCods(gPar)
+                grpCods.Remove gPar
+                If Val(gNovo) > maxG Then maxG = Val(gNovo)
+                LogAdd "EQUIVALENCIAS: par 105300003 = 105300005 movido do grupo " & gPar & " para o " & gNovo
+                Exit For
             End If
         End If
-    End If
+    Next gPar
 
     ' grupos novos (versao > aba), na ordem da lista padrao
     Dim novos As Object : Set novos = CreateObject("Scripting.Dictionary")   ' grupo -> Collection
@@ -5293,7 +5321,7 @@ Public Sub TestarLogicaInventario()
     pT.Add "2", "2" : pT.Add "11", "2" : pT.Add "5", "5"
     RegTest nomes, oks, det, cnt, "RaizGrupo 11 unido ao 2 = 2", (RaizGrupo(pT, "11") = "2")
     RegTest nomes, oks, det, cnt, "RaizGrupo 5 isolado = 5", (RaizGrupo(pT, "5") = "5")
-    ' Lista padrao: 7 campos por linha e grupos 1-13 sem o 10 (repetia o 8)
+    ' Lista padrao: 7 campos por linha e sem o grupo 10 (repetia o 8)
     Dim epOk As Boolean : epOk = True
     Dim epIt As Variant
     For Each epIt In EquivPadrao()
