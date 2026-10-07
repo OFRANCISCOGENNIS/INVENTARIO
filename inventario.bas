@@ -1339,6 +1339,17 @@ Private Function LimiteValorODD() As Double
     If IsEmpty(mOddValMin) Then LimiteValorODD = -100 Else LimiteValorODD = mOddValMin
 End Function
 
+' Alerta POSTE ODI PU BAIXO: poste (familia contendo POSTE) em PEP ODI com
+' preco unitario (VALOR / QTD) de 0 ate abaixo do limite (padrao R$ 500).
+' PU negativo fica de fora (ja e alerta de sinal); QTD zero nao alerta.
+Private Function PosteBaratoODI(ByVal odTp As String, ByVal famN As String, _
+        ByVal valor As Double, ByVal qtd As Double, ByVal limite As Double) As Boolean
+    If odTp <> "ODI" Or qtd = 0 Then Exit Function
+    If InStr(famN, "POSTE") = 0 Then Exit Function
+    Dim pu As Double : pu = valor / qtd
+    PosteBaratoODI = (pu >= 0 And pu < limite)
+End Function
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
@@ -1972,6 +1983,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim puOdiMax As Double : puOdiMax = CfgD("PU_ODI_MAX", 10)
     Dim puCabo As Double : puCabo = CfgD("PU_CABO_ALERTA", 0.01)
     Dim oddLim As Double : oddLim = LimiteValorODD()
+    Dim posteMin As Double : posteMin = CfgD("POSTE_ODI_PU_MIN", 500)
 
     Dim kk As Variant
     For Each kk In p4pep3b.Keys
@@ -2122,6 +2134,22 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 8, qtd
             AlertaCel outRow, 10, Format(oddLim, "#,##0.00")
             AlertaCel outRow, 11, motOdd & " - item NAO ADERENTE"
+            outRow = outRow + 1
+        End If
+
+        If PosteBaratoODI(odTp, famN, valor, qtd, posteMin) And codMat <> "" Then
+            AlertaCel outRow, 1, "POSTE ODI PU BAIXO"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 9, valor / qtd
+            AlertaCel outRow, 10, Format(posteMin, "#,##0.00")
+            AlertaCel outRow, 11, "Poste em PEP ODI com preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
+                " abaixo de R$ " & Format(posteMin, "#,##0.00")
             outRow = outRow + 1
         End If
 
@@ -2454,6 +2482,7 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "PU BAIXO EM ODI":           bgA = RGB(252, 231, 243) : chip = RGB(190, 24, 93)
         Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
         Case "ODD VALOR ABAIXO DO LIMITE": bgA = RGB(252, 226, 228) : chip = RGB(153, 27, 27)
+        Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
         Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
     End Select
 End Sub
@@ -3915,34 +3944,46 @@ Private Sub FimEtapa(erroNum As Long, erroDesc As String, etapa As String, t0 As
 End Sub
 
 ' --------- CONFIG editavel (parametros centralizados na aba CONFIG) ---------
+' Parametros padrao da aba CONFIG: CHAVE | VALOR | DESCRICAO.
+Private Function CfgPadrao() As Collection
+    Dim c As Collection : Set c = New Collection
+    c.Add Array("TOL_ADERENCIA_PCT", 0.1, "Tolerancia de aderencia SAP x PRJ (fracao; 0,1 = 10%)")
+    c.Add Array("TOL_SUBVAL", 0.9, "UC subvalorizado: alerta se PU menor que fator x referencia")
+    c.Add Array("MIN_DIVERG_RS", 100, "Materialidade minima da divergencia em R$ p/ alertar")
+    c.Add Array("CABO_ISOLADO_MAX_M", 15, "Cabo isolado abaixo deste comprimento (m) fica isento de UC")
+    c.Add Array("CORTE_DIVERG_QTD", 20, "Destaca linhas com diferenca de qtd acima deste valor")
+    c.Add Array("PESO_REPROV", 40, "Ranking: peso de obra reprovada na SAP x PRJ")
+    c.Add Array("PESO_ALERTA", 4, "Ranking: peso por alerta critico")
+    c.Add Array("CAP_ALERTA", 24, "Ranking: teto da parcela de alertas")
+    c.Add Array("PESO_PU", 3, "Ranking: peso por divergencia de preco unitario")
+    c.Add Array("CAP_PU", 18, "Ranking: teto da parcela de PU")
+    c.Add Array("PESO_COM", 2, "Ranking: peso por COM fora do previsto NT.006")
+    c.Add Array("CAP_COM", 18, "Ranking: teto da parcela de COM")
+    c.Add Array("COM_CRITICO", "CH FUS; PARA RAIO", "Familias COM criticas (separadas por ;) que reprovam o PEP3")
+    c.Add Array("DIF_ABS_COND_NU", 5, "COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE")
+    c.Add Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE")
+    c.Add Array("DIF_ABS_FAMILIAS", "CABO ISOLADO; CABO COBRE; COND COBRE", "Familias (separadas por ;) que usam a regra DIF_ABS_CABO")
+    c.Add Array("PU_ODI_MIN", 0.01, "Alerta PU BAIXO EM ODI: preco unitario minimo da faixa (R$)")
+    c.Add Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)")
+    c.Add Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)")
+    c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
+    c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
+    Set CfgPadrao = c
+End Function
+
 Private Sub GarantirConfig(wb As Workbook)
     Set mCfg = CreateObject("Scripting.Dictionary")
 
     ' Defaults: usados na criacao da aba E para acrescentar chaves novas
     ' em planilhas que ja tem a aba CONFIG de versao anterior do modulo.
-    Dim df As Variant
-    df = Array( _
-        Array("TOL_ADERENCIA_PCT", 0.1, "Tolerancia de aderencia SAP x PRJ (fracao; 0,1 = 10%)"), _
-        Array("TOL_SUBVAL", 0.9, "UC subvalorizado: alerta se PU menor que fator x referencia"), _
-        Array("MIN_DIVERG_RS", 100, "Materialidade minima da divergencia em R$ p/ alertar"), _
-        Array("CABO_ISOLADO_MAX_M", 15, "Cabo isolado abaixo deste comprimento (m) fica isento de UC"), _
-        Array("CORTE_DIVERG_QTD", 20, "Destaca linhas com diferenca de qtd acima deste valor"), _
-        Array("PESO_REPROV", 40, "Ranking: peso de obra reprovada na SAP x PRJ"), _
-        Array("PESO_ALERTA", 4, "Ranking: peso por alerta critico"), _
-        Array("CAP_ALERTA", 24, "Ranking: teto da parcela de alertas"), _
-        Array("PESO_PU", 3, "Ranking: peso por divergencia de preco unitario"), _
-        Array("CAP_PU", 18, "Ranking: teto da parcela de PU"), _
-        Array("PESO_COM", 2, "Ranking: peso por COM fora do previsto NT.006"), _
-        Array("CAP_COM", 18, "Ranking: teto da parcela de COM"), _
-        Array("COM_CRITICO", "CH FUS; PARA RAIO", "Familias COM criticas (separadas por ;) que reprovam o PEP3"), _
-        Array("DIF_ABS_COND_NU", 5, "COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE"), _
-        Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE"), _
-        Array("DIF_ABS_FAMILIAS", "CABO ISOLADO; CABO COBRE; COND COBRE", "Familias (separadas por ;) que usam a regra DIF_ABS_CABO"), _
-        Array("PU_ODI_MIN", 0.01, "Alerta PU BAIXO EM ODI: preco unitario minimo da faixa (R$)"), _
-        Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)"), _
-        Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)"), _
-        Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE") _
-    )
+    ' (montado por CfgPadrao, uma linha por parametro: o Array com "_" ja estava
+    ' em 22 das 24 continuacoes de linha que o VBA aceita numa instrucao)
+    Dim cl As Collection : Set cl = CfgPadrao()
+    Dim df() As Variant : ReDim df(0 To cl.Count - 1)
+    Dim jD As Long
+    For jD = 1 To cl.Count
+        df(jD - 1) = cl(jD)
+    Next jD
 
     Dim ws As Worksheet
     On Error Resume Next
@@ -5338,7 +5379,7 @@ End Sub
 
 ' --------- Testes de logica de negocio (rode via Alt+F8) ---------
 Public Sub TestarLogicaInventario()
-    Dim nomes(1 To 100) As String, oks(1 To 100) As Boolean, det(1 To 100) As String
+    Dim nomes(1 To 200) As String, oks(1 To 200) As Boolean, det(1 To 200) As String
     Dim cnt As Long, pass As Long
     Dim mp As Object : Set mp = CriarMapaNT006()
 
@@ -5456,6 +5497,14 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "ValorBaixoODD em ODI = fora (so ODD)", (ValorBaixoODD("ODI", -150, -100) = "")
     avT = AvaliarLinha("UC", "PARAFUSO", -5, -5, "ADERENTE", False, "ODD", -150)
     RegTest nomes, oks, det, cnt, "AvaliarLinha ODD valor -150: NAO ADERENTE e reprova", (avT.ViolaOD And Not avT.EhAder And avT.ReprovaLinha)
+    ' Alerta POSTE ODI PU BAIXO (preco unitario de 0 a < 500, so ODI):
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI POSTE RD R$ 400 = alerta", (PosteBaratoODI("ODI", "POSTE RD", 400, 1, 500) = True)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI 2 postes R$ 800 (PU 400) = alerta", (PosteBaratoODI("ODI", "POSTE RD", 800, 2, 500) = True)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU 500 (limite) = sem alerta", (PosteBaratoODI("ODI", "POSTE RD", 500, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU 1.200 = sem alerta", (PosteBaratoODI("ODI", "POSTE RD", 1200, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PEP ODD = fora (so ODI)", (PosteBaratoODI("ODD", "POSTE RD", 400, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI TRAFO = fora (so poste)", (PosteBaratoODI("ODI", "TRAFO", 400, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU negativo = fora (alerta de sinal)", (PosteBaratoODI("ODI", "POSTE RD", -400, 1, 500) = False)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
