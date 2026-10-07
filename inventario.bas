@@ -1309,6 +1309,17 @@ Private Function PuBaixoODI(ByVal odTp As String, ByVal famN As String, _
     PuBaixoODI = (pu >= puMin - 0.000001 And pu <= puMax + 0.000001)
 End Function
 
+' Alerta PU 0,01 EM CABO/COND: cabo ou condutor (familia CABO* / COND*) com
+' preco unitario (VALOR / QTD) igual ao valor simbolico puAlvo (R$ 0,01) -
+' vale "o que aparece como 0,01": a menos de meio centavo dele (0,0051 a 0,0149).
+' Qualquer tipo de PEP. QTD zero nao tem preco unitario e nao alerta.
+Private Function PuSimbolicoCabo(ByVal famN As String, ByVal valor As Double, _
+        ByVal qtd As Double, ByVal puAlvo As Double) As Boolean
+    If qtd = 0 Then Exit Function
+    If Left(famN, 4) <> "COND" And Left(famN, 4) <> "CABO" Then Exit Function
+    PuSimbolicoCabo = (Abs(valor / qtd - puAlvo) < 0.005)
+End Function
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
@@ -1937,6 +1948,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim valor As Double, qtd As Double, unit As Double, refP As Double
     Dim puOdiMin As Double : puOdiMin = CfgD("PU_ODI_MIN", 0.01)
     Dim puOdiMax As Double : puOdiMax = CfgD("PU_ODI_MAX", 10)
+    Dim puCabo As Double : puCabo = CfgD("PU_CABO_ALERTA", 0.01)
 
     Dim kk As Variant
     For Each kk In p4pep3b.Keys
@@ -2070,6 +2082,22 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 11, "Preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
                 " em PEP ODI (faixa de alerta R$ " & Format(puOdiMin, "#,##0.00") & _
                 " a R$ " & Format(puOdiMax, "#,##0.00") & ")"
+            outRow = outRow + 1
+        End If
+
+        If PuSimbolicoCabo(famN, valor, qtd, puCabo) And codMat <> "" Then
+            AlertaCel outRow, 1, "PU 0,01 EM CABO/COND"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 9, valor / qtd
+            AlertaCel outRow, 10, Format(puCabo, "#,##0.00")
+            AlertaCel outRow, 11, "Cabo/condutor com preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
+                " (valor simbolico) em PEP " & IIf(odTp <> "", odTp, pep4)
             outRow = outRow + 1
         End If
 
@@ -2384,6 +2412,7 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "UC - PRECO NAO ENCONTRADO": bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
         Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
         Case "PU BAIXO EM ODI":           bgA = RGB(252, 231, 243) : chip = RGB(190, 24, 93)
+        Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
         Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
     End Select
 End Sub
@@ -3869,7 +3898,8 @@ Private Sub GarantirConfig(wb As Workbook)
         Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE"), _
         Array("DIF_ABS_FAMILIAS", "CABO ISOLADO; CABO COBRE; COND COBRE", "Familias (separadas por ;) que usam a regra DIF_ABS_CABO"), _
         Array("PU_ODI_MIN", 0.01, "Alerta PU BAIXO EM ODI: preco unitario minimo da faixa (R$)"), _
-        Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)") _
+        Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)"), _
+        Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)") _
     )
 
     Dim ws As Worksheet
@@ -5369,6 +5399,13 @@ Public Sub TestarLogicaInventario()
     mt2.Add "MAT LIB SAP", 3 : mt2.Add "ATENDIDO SAP", 9
     AplicarAliasesBase mt2
     RegTest nomes, oks, det, cnt, "Alias: com os dois nomes, vale o canonico", (ColIdx(mt2, "MAT LIB SAP") = 3)
+    ' Alerta PU 0,01 EM CABO/COND (qualquer PEP; so familias CABO*/COND*):
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo CABO ISOLADO 1,00/100 m = alerta", (PuSimbolicoCabo("CABO ISOLADO", 1, 100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo COND NU 0,012 (mostra 0,01) = alerta", (PuSimbolicoCabo("COND NU", 1.2, 100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo ODD (valor e qtd negativos) = alerta", (PuSimbolicoCabo("CABO COBRE", -1, -100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PU 0,02 = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 2, 100, 0.01) = False)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PARAFUSO 0,01 = fora (so cabo/cond)", (PuSimbolicoCabo("PARAFUSO", 1, 100, 0.01) = False)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo QTD zero = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 1, 0, 0.01) = False)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
