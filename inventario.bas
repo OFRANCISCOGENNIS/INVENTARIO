@@ -481,9 +481,9 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
 
         ' ---- Pre-passe: grupos de materiais EQUIVALENTES em cada PEP4 ----
         ' Quando 2+ codigos do mesmo grupo (aba EQUIVALENCIAS) aparecem no mesmo
-        ' PEP4, houve troca de material: todos ficam ADERENTE, cada linha com o
-        ' proprio codigo e descricao. Guarda os codigos do grupo (para o motivo)
-        ' e os totais de quantidade (informativos, e para a regra do UC zerado).
+        ' PEP4, houve troca de material: a aderencia de todos e pela quantidade
+        ' TOTAL do grupo (SAP somado x PRJ somado), cada linha com o proprio
+        ' codigo e descricao. Guarda os totais e os codigos do grupo (motivo).
         Dim eqLib As Object : Set eqLib = CreateObject("Scripting.Dictionary")
         Dim eqPrj As Object : Set eqPrj = CreateObject("Scripting.Dictionary")
         Dim eqCods As Object : Set eqCods = CreateObject("Scripting.Dictionary")
@@ -525,19 +525,19 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(2) > 0 Then p4Raw = CStr(baseData(i, srcIdx(2)))
             If iTpPep > 0 Then tpPepR = CStr(baseData(i, iTpPep))
             If srcIdx(6) > 0 Then valR = baseData(i, srcIdx(6))
-            ' troca por material EQUIVALENTE no PEP4: item aderente
+            ' troca por material EQUIVALENTE no PEP4: aderencia pela QUANTIDADE TOTAL
+            ' do grupo (SAP somado x PRJ somado), nao pela de cada codigo
             Dim eqK1 As String : eqK1 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
             Dim eqAt1 As Boolean : eqAt1 = False
             If eqK1 <> "" Then eqAt1 = (eqCods(eqK1).Count >= 2)
             Dim libAv As Variant, prjAv As Variant, sitAv As String
             libAv = libV : prjAv = prjV : sitAv = sitR
             If eqAt1 Then
-                libAv = eqLib(eqK1) : prjAv = eqPrj(eqK1) : sitAv = "ADERENTE"
+                libAv = eqLib(eqK1) : prjAv = eqPrj(eqK1) : sitAv = SitPorQuantidade(libAv, prjAv)
             End If
             Dim av As tAvalLinha
             av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
                               ClassificarOD(p4Raw, tpPepR), valR, libV)
-            If eqAt1 Then ForcarAderenteEquiv av
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
             If pep4 <> "" And Not p4pep3.Exists(pep4) Then p4pep3.Add pep4, pep3R
             If pep4 <> "" And av.Avaliavel And Not av.CaboIsento Then
@@ -619,18 +619,17 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             Dim eqAt2 As Boolean : eqAt2 = False
             If eqK2 <> "" Then eqAt2 = (eqCods(eqK2).Count >= 2)
             If eqAt2 Then
-                libV = eqLib(eqK2) : prjV = eqPrj(eqK2) : sitR = "ADERENTE"
+                libV = eqLib(eqK2) : prjV = eqPrj(eqK2) : sitR = SitPorQuantidade(libV, prjV)
             End If
             Dim avRow As tAvalLinha
             avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
                                  ClassificarOD(p4RawRow, tpPepRow), valRow, libRow)
-            If eqAt2 Then ForcarAderenteEquiv avRow
 
             Dim sitText As String
             If avRow.UcZerado Or avRow.ViolaOD Then
                 sitText = "NAO ADERENTE"
             ElseIf eqAt2 Then
-                sitText = "ADERENTE"
+                sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
             ElseIf avRow.RecalculaSit Then
                 sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
             Else
@@ -680,8 +679,9 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                 motivo = motivo & " | Item NAO ADERENTE: " & avRow.MotivoOD
             End If
             If eqAt2 Then
-                motivo = motivo & " | Material equivalente (aderente): " & TextoEquiv(eqCods(eqK2)) & _
-                         " | total no PEP4 SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV)
+                motivo = motivo & " | Material equivalente: " & TextoEquiv(eqCods(eqK2)) & _
+                         " | total do grupo no PEP4 SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV) & _
+                         IIf(avRow.EhAder, "", FmtDif(libV, prjV))
             End If
             outArr(i, 15) = motivo
             outArr(i, 16) = IIf(p3Reprovado, "Devolvido por divergencia de " & pep3RepFam(p3row), "")
@@ -4486,14 +4486,18 @@ Private Function ChaveEquiv(baseData As Variant, ByVal i As Long, _
     ChaveEquiv = p4 & "|" & mEquiv(cod)
 End Function
 
-' Item em troca por material EQUIVALENTE no mesmo PEP4: aderente por
-' definicao, qualquer que seja a quantidade. Continuam valendo a premissa de
-' sinal por tipo de OD e a devolucao de obra com todos os UC zerados.
-Private Sub ForcarAderenteEquiv(av As tAvalLinha)
-    If av.ViolaOD Or av.UcZerado Then Exit Sub
-    av.EhAder = True
-    av.ReprovaLinha = False
-End Sub
+' SIT MAT de um grupo de EQUIVALENTES no PEP4, pela quantidade TOTAL: SAP 3
+' num codigo e PRJ 9 no outro = NAO ADERENTE (faltam 6), mesmo sendo
+' equivalentes; SAP 3 e PRJ 3 = ADERENTE. Mesma tolerancia (TOL_ADERENCIA_PCT)
+' das familias avaliadas numericamente. O texto alimenta EhAderente.
+Private Function SitPorQuantidade(ByVal libV As Variant, ByVal prjV As Variant) As String
+    Dim l As Double : l = Val0(libV)
+    Dim p As Double : p = Val0(prjV)
+    Dim tol As Double : tol = mTolAder : If tol <= 0 Then tol = 0.1
+    Dim ok As Boolean
+    If p = 0 Then ok = (l = 0) Else ok = (Abs(l - p) <= tol * Abs(p))
+    SitPorQuantidade = IIf(ok, "ADERENTE", "NAO ADERENTE")
+End Function
 
 ' "105000058 CH SEC 1P VHI ... = 105000029 CH SEC BYPAS ...": os codigos do
 ' grupo presentes no PEP4, cada um com a propria descricao da base.
@@ -5445,13 +5449,14 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "PuBaixoODI COND NU = excluido", (PuBaixoODI("ODI", "COND NU", 5, 1, 0.01, 10) = False)
     RegTest nomes, oks, det, cnt, "PuBaixoODI PEP ODS = fora (so ODI)", (PuBaixoODI("ODS", "PARAFUSO", 5, 1, 0.01, 10) = False)
     RegTest nomes, oks, det, cnt, "PuBaixoODI QTD zero = sem alerta", (PuBaixoODI("ODI", "PARAFUSO", 5, 0, 0.01, 10) = False)
-    ' Equivalentes: troca no mesmo PEP4 = aderente, qualquer que seja a quantidade
-    avT = AvaliarLinha("UC", "CH SU FACA", 3, 0, "NAO ADERENTE", False)
-    ForcarAderenteEquiv avT
-    RegTest nomes, oks, det, cnt, "Equivalente SAP 3 / PRJ 0: ADERENTE, nao reprova", (avT.EhAder And Not avT.ReprovaLinha)
-    avT = AvaliarLinha("UC", "CH SU FACA", 3, 3, "ADERENTE", False, "ODD", 100)
-    ForcarAderenteEquiv avT
-    RegTest nomes, oks, det, cnt, "Equivalente com sinal invertido: continua NAO ADERENTE", (Not avT.EhAder And avT.ReprovaLinha)
+    ' Equivalentes: aderencia pela quantidade TOTAL do grupo no PEP4. Caso real
+    ' (grupo 3): 105010022 SAP 0 / PRJ 9 + 105010003 SAP 3 / PRJ 0 = 3 x 9
+    RegTest nomes, oks, det, cnt, "Equivalente total SAP 3 / PRJ 9 = NAO ADERENTE", (SitPorQuantidade(0 + 3, 9 + 0) = "NAO ADERENTE")
+    RegTest nomes, oks, det, cnt, "Equivalente total SAP 3 / PRJ 3 = ADERENTE", (SitPorQuantidade(3, 3) = "ADERENTE")
+    avT = AvaliarLinha("UC", "CH SU FACA", 3, 9, SitPorQuantidade(3, 9), False)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha equivalente 3 x 9: NAO ADERENTE e reprova", (Not avT.EhAder And avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "CH SU FACA", 3, 3, SitPorQuantidade(3, 3), False, "ODD", 100)
+    RegTest nomes, oks, det, cnt, "Equivalente 3 x 3 com sinal invertido: NAO ADERENTE", (Not avT.EhAder And avT.ViolaOD)
     Dim dEq As Object : Set dEq = CreateObject("Scripting.Dictionary")
     dEq.Add "105000058", "CH SEC 1P" : dEq.Add "105000029", "CH SEC BYPAS"
     RegTest nomes, oks, det, cnt, "TextoEquiv mantem os dois nomes", (TextoEquiv(dEq) = "105000058 CH SEC 1P = 105000029 CH SEC BYPAS")

@@ -29,8 +29,10 @@ nessa lista e acumulam histórico entre rodadas:
 - `EQUIVALENCIAS` — materiais equivalentes, no layout `COD MAT | DESC MAT | UND |
   TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA` (mesmo número em
   `EQUIVALENCIA` = códigos intercambiáveis). Na ANALISE SAP x PRJ, quando 2+ códigos
-  do grupo aparecem no mesmo PEP4, todos ficam ADERENTE (cada linha mantém o próprio
-  código e descrição; o MOTIVO cita os dois). Um código em dois grupos une os grupos.
+  do grupo aparecem no mesmo PEP4, a aderência é pela quantidade TOTAL do grupo (SAP
+  somado x PRJ somado, tolerância `TOL_ADERENCIA_PCT`): SAP 3 num código e PRJ 9 no
+  outro = NÃO ADERENTE. Cada linha mantém o próprio código e descrição; o MOTIVO cita
+  os dois e o total. Um código em dois grupos une os grupos.
   Nasce com a lista padrão da área (grupos 1–34, sem o 10 e o 28, que repetiam o 8
   e o 24) e o grupo 35 (`105300003` = `105300005`, que muda de número quando a área
   passa a usar o dele). A aba é do usuário: a macro só acrescenta
