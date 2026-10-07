@@ -39,7 +39,7 @@ Private Const ABA_KPI As String = "HISTORICO KPI"
 ' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
 ' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
 ' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
-Private Const EQUIV_VERSAO_ATUAL As Long = 3
+Private Const EQUIV_VERSAO_ATUAL As Long = 4
 
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
@@ -4062,10 +4062,35 @@ Private Function EquivPadrao() As Collection
     c.Add Split("105310001|CHAVE FUS DT C POR 34,5KV 100A 5KA PDE|UN|UC|CH FUS|21|3", "|")
     c.Add Split("122120026|CABO COB AL 150MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|22|3", "|")
     c.Add Split("122120003|CABO COB AL CA 150MM2 15KV XLPE CZ (BLQ)|M|UC|COND PROT|22|3", "|")
-    ' versao 1, renumerado depois: a tabela da area passou a usar o 6 (v2) e o
-    ' 13 (v3); fica depois do ultimo grupo dela
-    c.Add Split("105300003|||||23|1", "|")
-    c.Add Split("105300005|||||23|1", "|")
+    ' versao 4 (o grupo 28 da tabela repete o 24 e ficou de fora; 23, 30, 31,
+    ' 32 e 33 compartilham codigos e sao unidos na leitura: 6+21+23, 25+30,
+    ' 4+32+33 e 31 com o par 105300003 = 105300005)
+    c.Add Split("105310005|CHAVE FUS C 34,5KV 200A 150KV SUP(BLQ)|UN|UC|CH FUS|23|4", "|")
+    c.Add Split("105310001|CHAVE FUS DT C POR 34,5KV 100A 5KA PDE|UN|UC|CH FUS|23|4", "|")
+    c.Add Split("105000007|CHAVE SEC 1P 15KV 400A 12,5KA MHI(BLQ)|UN|UC|CH SU FACA|24|4", "|")
+    c.Add Split("105000034|CHAV SEC 1F 15KV 400A MHI FC SL(BLQ)|UN|UC|CH SU FACA|24|4", "|")
+    c.Add Split("102100170|TRAFO DT 1F 13,8KV FN 25KVA 220V OV|UN|UC|TRAFO|25|4", "|")
+    c.Add Split("102100173|TRAFO DT 1F 13,8KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|25|4", "|")
+    c.Add Split("101100044|REL,FUSE-SAVER,1F,27KV,200A,NTE04701,BLQ|UN|UC|RELIGADOR|26|4", "|")
+    c.Add Split("101100027|RELIG 1F 24,2KV 100A 6,3KA S/CH PDE|UN|UC|RELIGADOR|26|4", "|")
+    c.Add Split("110010002|REGU TS 1F 19,92KV 201A 400KVA C/C(BLQ)|UN|UC|REGULADOR|27|4", "|")
+    c.Add Split("110010011|REGULAD TS 1F 19,92KV 201A 400KVA S/CONT|UN|UC|REGULADOR|27|4", "|")
+    c.Add Split("102100315|TD,1F,7,97-0,44/0,22kV,15KVA,4TAPs(DAN)|UN|UC|TRAFO|29|4", "|")
+    c.Add Split("102100168|TRAFO DT 1F 13,8KV FN 15KVA 440/220(M)OV|UN|UC|TRAFO|29|4", "|")
+    c.Add Split("102100337|TD,1P,7.97-0.44/0.22kV,25KVA,BLQ|UN|UC|TRAFO|30|4", "|")
+    c.Add Split("102100173|TRAFO DT 1F 13,8KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|30|4", "|")
+    c.Add Split("105310016|CHAVE FUS C ZCORR 23,1KV 100A 6,3KA PDE|UN|COM|CH FUS|31|4", "|")
+    c.Add Split("105300005|CHAVE FUS C 15KV 100A NBI 95KV 2KA(BLQ)|UN|COM|CH FUS|31|4", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|32|4", "|")
+    c.Add Split("102100062|TRAFO DT 3F 13,8KV 112,5KVA 220/127V OV|UN|UC|TRAFO|32|4", "|")
+    c.Add Split("102100350|TD,3F,13,8kV,380V,112KVA,4TAPs(DAN),BLQ|UN|UC|TRAFO|33|4", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|33|4", "|")
+    c.Add Split("102110364|TD,1F,19,9-0,44/0,22kV,15KVA,4TAPs(DAN)|UN|UC|TRAFO|34|4", "|")
+    c.Add Split("102110363|TD,1F,19,9-0,44/0,22kV,15KVA,4TAPs FP|UN|UC|TRAFO|34|4", "|")
+    ' versao 1, renumerado depois: a tabela da area passou a usar o 6 (v2), o
+    ' 13 (v3) e o 23 (v4); fica depois do ultimo grupo dela
+    c.Add Split("105300003|||||35|1", "|")
+    c.Add Split("105300005|||||35|1", "|")
     Set EquivPadrao = c
 End Function
 
@@ -4221,7 +4246,7 @@ Private Sub AtualizarEquivalencias(ws As Worksheet, padrao As Collection, ByVal 
     Next r
 
     ' O par 105300003 = 105300005 muda de numero quando a tabela da area passa a
-    ' usar o dele (6 na v1, 13 na v2). Se o grupo dele na aba ainda e exatamente
+    ' usar o dele (6 na v1, 13 na v2, 23 na v3). Se o grupo dele na aba ainda e exatamente
     ' esse par e esta fora do numero atual da lista padrao, vai para esse numero
     ' (ou para o proximo livre, se o usuario ja o usa).
     Dim itP As Variant, gAlvo As String, gPar As Variant, gNovo As String
@@ -5321,14 +5346,14 @@ Public Sub TestarLogicaInventario()
     pT.Add "2", "2" : pT.Add "11", "2" : pT.Add "5", "5"
     RegTest nomes, oks, det, cnt, "RaizGrupo 11 unido ao 2 = 2", (RaizGrupo(pT, "11") = "2")
     RegTest nomes, oks, det, cnt, "RaizGrupo 5 isolado = 5", (RaizGrupo(pT, "5") = "5")
-    ' Lista padrao: 7 campos por linha e sem o grupo 10 (repetia o 8)
+    ' Lista padrao: 7 campos por linha e sem os grupos 10 e 28 (repetiam 8 e 24)
     Dim epOk As Boolean : epOk = True
     Dim epIt As Variant
     For Each epIt In EquivPadrao()
         If UBound(epIt) <> 6 Then epOk = False
-        If CStr(epIt(5)) = "10" Then epOk = False
+        If CStr(epIt(5)) = "10" Or CStr(epIt(5)) = "28" Then epOk = False
     Next epIt
-    RegTest nomes, oks, det, cnt, "EquivPadrao: 7 campos por linha, sem grupo 10", epOk
+    RegTest nomes, oks, det, cnt, "EquivPadrao: 7 campos por linha, sem grupos 10 e 28", epOk
     avT = AvaliarLinha("UC", "PARAFUSO", -10, -10, "ADERENTE", False, "ODD", -50, 4)
     RegTest nomes, oks, det, cnt, "AvaliarLinha sinal pela qtd da linha (qtdSinal)", (avT.SinalInvalido)
     ' Cabecalho do layout novo da extracao resolve para os nomes canonicos:
