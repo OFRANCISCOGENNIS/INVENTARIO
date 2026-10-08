@@ -1352,6 +1352,17 @@ Private Function PosteBaratoODI(ByVal odTp As String, ByVal famN As String, _
     PosteBaratoODI = (pu >= 0 And pu < limite)
 End Function
 
+' Alerta MEDIDOR EM PEP ODI: medidor (descricao ou familia com MEDIDOR) em PEP
+' ODI. Mesmo criterio de medidor da regra de ODM (sem CAIXA, para nao pegar
+' "CAIXA PARA MEDIDOR"), e tambem sem LACRE ("LACRE P/ MEDIDOR" nao e medidor).
+Private Function MedidorEmODI(ByVal odTp As String, ByVal descNorm As String, _
+                              ByVal famN As String) As Boolean
+    If odTp <> "ODI" Then Exit Function
+    Dim dN As String : dN = descNorm & " " & famN
+    MedidorEmODI = (InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 _
+                    And InStr(dN, "LACRE") = 0)
+End Function
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
@@ -2139,6 +2150,20 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             outRow = outRow + 1
         End If
 
+        ' medidor e material de ODM: lancado em ODI esta no tipo de obra errado
+        If MedidorEmODI(odTp, NormStr(descMat), famN) And codMat <> "" Then
+            AlertaCel outRow, 1, "MEDIDOR EM PEP ODI"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 11, "Medidor em PEP ODI (medidor e material de ODM)"
+            outRow = outRow + 1
+        End If
+
         If PosteBaratoODI(odTp, famN, valor, qtd, posteMin) And codMat <> "" Then
             AlertaCel outRow, 1, "POSTE ODI PU BAIXO"
             AlertaCel outRow, 2, pep3
@@ -2485,6 +2510,7 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
         Case "ODD VALOR ABAIXO DO LIMITE": bgA = RGB(252, 226, 228) : chip = RGB(153, 27, 27)
         Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
+        Case "MEDIDOR EM PEP ODI":        bgA = RGB(237, 233, 254) : chip = RGB(109, 40, 217)
         Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
     End Select
 End Sub
@@ -5523,6 +5549,13 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "PosteBaratoODI PEP ODD = fora (so ODI)", (PosteBaratoODI("ODD", "POSTE RD", 400, 1, 500) = False)
     RegTest nomes, oks, det, cnt, "PosteBaratoODI TRAFO = fora (so poste)", (PosteBaratoODI("ODI", "TRAFO", 400, 1, 500) = False)
     RegTest nomes, oks, det, cnt, "PosteBaratoODI PU negativo = fora (alerta de sinal)", (PosteBaratoODI("ODI", "POSTE RD", -400, 1, 500) = False)
+    ' Alerta MEDIDOR EM PEP ODI (medidor e material de ODM):
+    RegTest nomes, oks, det, cnt, "MedidorEmODI medidor em ODI = alerta", (MedidorEmODI("ODI", NormStr("MEDIDOR ELETRONICO MONOFASICO"), "MEDIDOR") = True)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI so pela familia = alerta", (MedidorEmODI("ODI", NormStr("ELETRONICO 1F 120V"), "MEDIDOR") = True)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI medidor em ODM = sem alerta", (MedidorEmODI("ODM", NormStr("MEDIDOR ELETRONICO"), "MEDIDOR") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI CAIXA PARA MEDIDOR = sem alerta", (MedidorEmODI("ODI", NormStr("CAIXA PARA MEDIDOR"), "CAIXA MEDICAO") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI LACRE P/ MEDIDOR = sem alerta", (MedidorEmODI("ODI", NormStr("LACRE P/ MEDIDOR"), "LACRE") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI TRAFO = sem alerta", (MedidorEmODI("ODI", NormStr("TRAFO DT 1F 13,8KV"), "TRAFO") = False)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
