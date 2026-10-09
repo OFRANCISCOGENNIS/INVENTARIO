@@ -16,6 +16,26 @@ Colar código longo diretamente na janela de código do VBE pode truncar linhas
 (inclusive linhas `Dim`), o que produz o erro de compilação
 `Variável não definida`. Sempre use Importar.
 
+## Carregar bases (macro `CarregarBases`)
+
+Importa as extrações de análise de carga e roda a análise, sem copiar e colar:
+
+1. **Alt+F8 → `CarregarBases` → Executar** (ou associe a macro a um botão).
+2. Selecione um ou mais arquivos de base (`.xlsx`, `.xlsm`, `.xls`, `.xlsb`, `.csv`).
+   A aba da base é encontrada sozinha em cada arquivo, pelos títulos antigos
+   (`MAT LIB SAP`…) ou novos (`ATENDIDO SAP`…).
+3. Com mais de um arquivo, escolha:
+   - **SIM — juntar**: uma análise com todas as bases. As colunas são casadas por
+     nome (a ordem pode variar entre arquivos) e a coluna `ARQUIVO ORIGEM`
+     identifica de onde veio cada linha.
+   - **NÃO — separar**: uma análise por base, salva ao lado de cada arquivo como
+     `ANALISE INVENTARIO - <base>.xlsx`, com um resumo no final. Nesse modo o
+     `HISTORICO` e o "vs. execução anterior" não são atualizados (comparariam
+     bases diferentes).
+
+A aba de base atual deste arquivo é **substituída** pelos dados carregados (a macro
+pede confirmação antes). Os arquivos de base são abertos só para leitura.
+
 ## Abas persistentes
 
 A macro apaga e recria as abas de análise a cada execução, mas estas **não** entram
