@@ -475,6 +475,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
         Dim allP4 As Object : Set allP4 = CreateObject("Scripting.Dictionary")
         Dim p4pep3 As Object : Set p4pep3 = CreateObject("Scripting.Dictionary")
         Dim pep3RepFam As Object : Set pep3RepFam = CreateObject("Scripting.Dictionary")  ' PEP3 -> familias que reprovaram
+        Dim p3NegODI As Object : Set p3NegODI = CreateObject("Scripting.Dictionary")      ' PEP3 com valor negativo em ODI
         Dim i As Long, pep4 As String, tipoR As String, sitR As String, pep3R As String
         Dim famR As String, famRaw As String, libV As Variant, prjV As Variant
 
@@ -557,6 +558,21 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
                               ClassificarOD(p4Raw, tpPepR), valR, libV)
             If eqAt1 Then AjustarAderEquiv av, libAv, prjAv
+            ' ODI com QUALQUER valor negativo reprova o PEP3 inteiro, seja qual for o
+            ' tipo do item (o veredito normal so conta UC e COM critico: um COM comum
+            ' negativo ficava NAO ADERENTE com a obra APROVADA)
+            If pep3R <> "" Then
+                If NegativoEmODI(ClassificarOD(p4Raw, tpPepR), valR) Then
+                    p3NegODI(pep3R) = True
+                    Dim fNeg As String
+                    fNeg = IIf(famRaw <> "", famRaw, "(sem familia)") & " (valor negativo em ODI)"
+                    If Not pep3RepFam.Exists(pep3R) Then
+                        pep3RepFam.Add pep3R, fNeg
+                    ElseIf InStr(pep3RepFam(pep3R), fNeg) = 0 Then
+                        pep3RepFam(pep3R) = pep3RepFam(pep3R) & ", " & fNeg
+                    End If
+                End If
+            End If
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
             If pep4 <> "" And Not p4pep3.Exists(pep4) Then p4pep3.Add pep4, pep3R
             If pep4 <> "" And av.Avaliavel And Not av.CaboIsento Then
@@ -595,6 +611,13 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If Not pep3Rep.Exists(p3) Then pep3Rep.Add p3, False
             If Not aprova(k4) Then pep3Rep(p3) = True
         Next k4
+        ' ODI com valor negativo: PEP3 reprovado mesmo sem item UC/COM critico
+        ' reprovado (e mesmo se nao tinha item avaliavel - deixa de ser "SEM UC")
+        Dim kN As Variant
+        For Each kN In p3NegODI.Keys
+            If Not pep3UC.Exists(kN) Then pep3UC.Add kN, True
+            pep3Rep(kN) = True
+        Next kN
 
         Dim kk As Variant
         For Each kk In pep3Rep.Keys
@@ -1379,6 +1402,12 @@ Private Function MedidorEmODI(ByVal odTp As String, ByVal descNorm As String, _
     Dim dN As String : dN = descNorm & " " & famN
     MedidorEmODI = (InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 _
                     And InStr(dN, "LACRE") = 0)
+End Function
+
+' PEP3 NAO ADERENTE por valor negativo em ODI: linha de PEP ODI com VALOR
+' negativo (qualquer tipo de item). Zero nao conta.
+Private Function NegativoEmODI(ByVal odTp As String, ByVal valV As Variant) As Boolean
+    NegativoEmODI = (odTp = "ODI" And Val0(valV) < 0)
 End Function
 
 Private Function AvaliarLinha(tipoR As String, famR As String, _
@@ -5926,6 +5955,11 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "MapaDeCabecalho layout novo: COD MAT e MAT PRJ CAD", (ColIdx(mH, "COD MAT") = 1 And ColIdx(mH, "MAT PRJ CAD") = 2)
     RegTest nomes, oks, det, cnt, "NomeArquivo caminho Windows", (NomeArquivo("C:\bases\base jan.xlsx") = "base jan.xlsx")
     RegTest nomes, oks, det, cnt, "NomeArquivo caminho com /", (NomeArquivo("/Users/x/base.csv") = "base.csv")
+    ' PEP3 reprovado por qualquer valor negativo em ODI:
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor -10 = reprova PEP3", (NegativoEmODI("ODI", -10) = True)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor 0 = ok", (NegativoEmODI("ODI", 0) = False)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor positivo = ok", (NegativoEmODI("ODI", 150) = False)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODD negativo = fora (so ODI)", (NegativoEmODI("ODD", -10) = False)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
