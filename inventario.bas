@@ -60,7 +60,7 @@ Private Type tAvalLinha
     CaboIsento   As Boolean  ' CABO ISOLADO < CABO_ISOLADO_MAX_M (isento)
     ReprovaLinha As Boolean  ' esta linha reprova o PEP4/PEP3
     RecalculaSit As Boolean  ' SIT MAT recalculada (cabo/condutor/ramal numerico)
-    ViolaOD      As Boolean  ' viola premissa do tipo de OD (sinal; valor da ODD)
+    ViolaOD      As Boolean  ' viola premissa de sinal/OD (sinal por OD; valor da ODD; SAP x PRJ opostos)
     MotivoOD     As String   ' descricao da(s) violacao(oes) ("" quando ok)
 End Type
 
@@ -475,7 +475,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
         Dim allP4 As Object : Set allP4 = CreateObject("Scripting.Dictionary")
         Dim p4pep3 As Object : Set p4pep3 = CreateObject("Scripting.Dictionary")
         Dim pep3RepFam As Object : Set pep3RepFam = CreateObject("Scripting.Dictionary")  ' PEP3 -> familias que reprovaram
-        Dim p3NegODI As Object : Set p3NegODI = CreateObject("Scripting.Dictionary")      ' PEP3 com valor negativo em ODI
+        Dim p3RepLinha As Object : Set p3RepLinha = CreateObject("Scripting.Dictionary")  ' PEP3 reprovado por regra de linha (qualquer item)
         Dim i As Long, pep4 As String, tipoR As String, sitR As String, pep3R As String
         Dim famR As String, famRaw As String, libV As Variant, prjV As Variant
 
@@ -556,21 +556,22 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             End If
             Dim av As tAvalLinha
             av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
-                              ClassificarOD(p4Raw, tpPepR), valR, libV)
+                              ClassificarOD(p4Raw, tpPepR), valR, libV, prjV)
             If eqAt1 Then AjustarAderEquiv av, libAv, prjAv
-            ' ODI com QUALQUER valor negativo reprova o PEP3 inteiro, seja qual for o
-            ' tipo do item (o veredito normal so conta UC e COM critico: um COM comum
-            ' negativo ficava NAO ADERENTE com a obra APROVADA)
+            ' Regras de LINHA que reprovam o PEP3 inteiro, seja qual for o tipo do
+            ' item (o veredito normal so conta UC e COM critico: um COM comum assim
+            ' ficava NAO ADERENTE com a obra APROVADA):
+            '  - ODI com qualquer VALOR negativo
+            '  - MAT LIB SAP e MAT PRJ CAD da propria linha com sinais opostos
             If pep3R <> "" Then
+                Dim fBase As String : fBase = IIf(famRaw <> "", famRaw, "(sem familia)")
                 If NegativoEmODI(ClassificarOD(p4Raw, tpPepR), valR) Then
-                    p3NegODI(pep3R) = True
-                    Dim fNeg As String
-                    fNeg = IIf(famRaw <> "", famRaw, "(sem familia)") & " (valor negativo em ODI)"
-                    If Not pep3RepFam.Exists(pep3R) Then
-                        pep3RepFam.Add pep3R, fNeg
-                    ElseIf InStr(pep3RepFam(pep3R), fNeg) = 0 Then
-                        pep3RepFam(pep3R) = pep3RepFam(pep3R) & ", " & fNeg
-                    End If
+                    p3RepLinha(pep3R) = True
+                    RegistrarFamRep pep3RepFam, pep3R, fBase & " (valor negativo em ODI)"
+                End If
+                If SinaisOpostos(libV, prjV) <> "" Then
+                    p3RepLinha(pep3R) = True
+                    RegistrarFamRep pep3RepFam, pep3R, fBase & " (SAP x PRJ com sinais opostos)"
                 End If
             End If
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
@@ -611,10 +612,11 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If Not pep3Rep.Exists(p3) Then pep3Rep.Add p3, False
             If Not aprova(k4) Then pep3Rep(p3) = True
         Next k4
-        ' ODI com valor negativo: PEP3 reprovado mesmo sem item UC/COM critico
-        ' reprovado (e mesmo se nao tinha item avaliavel - deixa de ser "SEM UC")
+        ' Regras de linha (ODI negativa; SAP x PRJ opostos): PEP3 reprovado mesmo
+        ' sem item UC/COM critico reprovado (e se nao tinha item avaliavel, deixa
+        ' de ser "SEM UC")
         Dim kN As Variant
-        For Each kN In p3NegODI.Keys
+        For Each kN In p3RepLinha.Keys
             If Not pep3UC.Exists(kN) Then pep3UC.Add kN, True
             pep3Rep(kN) = True
         Next kN
@@ -657,6 +659,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             ' no PEP4 (avaliacao e motivo); as colunas de quantidade da linha ja
             ' foram copiadas acima com os valores proprios do item
             Dim libRow As Variant : libRow = libV
+            Dim prjRow As Variant : prjRow = prjV
             Dim eqK2 As String : eqK2 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
             Dim eqAt2 As Boolean : eqAt2 = False
             If eqK2 <> "" Then eqAt2 = (eqCods(eqK2).Count >= 2)
@@ -665,7 +668,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             End If
             Dim avRow As tAvalLinha
             avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
-                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow)
+                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow, prjRow)
             If eqAt2 Then AjustarAderEquiv avRow, libV, prjV
 
             Dim sitText As String
@@ -1410,13 +1413,35 @@ Private Function NegativoEmODI(ByVal odTp As String, ByVal valV As Variant) As B
     NegativoEmODI = (odTp = "ODI" And Val0(valV) < 0)
 End Function
 
+' SAP e PRJ com sinais opostos na mesma linha (SAP +3 / PRJ -3, ou SAP -3 /
+' PRJ +3): incoerente em qualquer tipo de OD. Zero nao e positivo nem
+' negativo. Devolve a descricao, ou "" quando ok.
+Private Function SinaisOpostos(ByVal libV As Variant, ByVal prjV As Variant) As String
+    Dim l As Double : l = Val0(libV)
+    Dim p As Double : p = Val0(prjV)
+    If (l > 0 And p < 0) Or (l < 0 And p > 0) Then
+        SinaisOpostos = "MAT LIB SAP (" & CStr(l) & ") e MAT PRJ CAD (" & CStr(p) & _
+                        ") com sinais opostos"
+    End If
+End Function
+
+' Acrescenta a familia culpada a lista de devolucao do PEP3 (sem repetir).
+Private Sub RegistrarFamRep(d As Object, ByVal p3 As String, ByVal lbl As String)
+    If Not d.Exists(p3) Then
+        d.Add p3, lbl
+    ElseIf InStr(d(p3), lbl) = 0 Then
+        d(p3) = d(p3) & ", " & lbl
+    End If
+End Sub
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
                               Optional ucZeradoReprova As Boolean = True, _
                               Optional ByVal tipoOD As String = "", _
                               Optional ByVal valV As Variant = 0, _
-                              Optional ByVal qtdSinal As Variant) As tAvalLinha
+                              Optional ByVal qtdSinal As Variant, _
+                              Optional ByVal prjSinal As Variant) As tAvalLinha
     Dim av As tAvalLinha
     av.UcZerado = MaterialUCZerado(tipoR, libV, prjV) And ucZeradoReprova
     av.EhAder = EhAderente(famR, libV, prjV, sitRNorm)
@@ -1431,6 +1456,12 @@ Private Function AvaliarLinha(tipoR As String, famR As String, _
     ' ODD: valor abaixo do limite tambem torna o item NAO ADERENTE
     Dim mVal As String : mVal = ValorBaixoODD(tipoOD, valV, LimiteValorODD())
     If mVal <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mVal
+    ' SAP e PRJ com sinais opostos: confere as quantidades da PROPRIA linha
+    ' (prjSinal/qtdSinal), nao o total de um grupo de equivalentes
+    Dim pS As Variant
+    If IsMissing(prjSinal) Then pS = prjV Else pS = prjSinal
+    Dim mOp As String : mOp = SinaisOpostos(qS, pS)
+    If mOp <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mOp
     av.ViolaOD = (av.MotivoOD <> "")
     If av.ViolaOD Then av.EhAder = False
     av.CaboIsento = CaboComoCOM(famR, libV)
@@ -5960,6 +5991,13 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor 0 = ok", (NegativoEmODI("ODI", 0) = False)
     RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor positivo = ok", (NegativoEmODI("ODI", 150) = False)
     RegTest nomes, oks, det, cnt, "NegativoEmODI ODD negativo = fora (so ODI)", (NegativoEmODI("ODD", -10) = False)
+    ' SAP x PRJ com sinais opostos: linha NAO ADERENTE e PEP3 reprovado
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP +3 / PRJ -3 = viola", (SinaisOpostos(3, -3) <> "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP -3 / PRJ +3 = viola", (SinaisOpostos(-3, 3) <> "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP 3 / PRJ 3 = ok", (SinaisOpostos(3, 3) = "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP 0 / PRJ -3 = ok (zero nao tem sinal)", (SinaisOpostos(0, -3) = "")
+    avT = AvaliarLinha("COM", "PARAFUSO", 3, -3, "ADERENTE", False)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha SAP 3 / PRJ -3: NAO ADERENTE", (avT.ViolaOD And Not avT.EhAder)
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
