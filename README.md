@@ -45,8 +45,8 @@ nessa lista e acumulam histórico entre rodadas:
 - `HISTORICO KPI` — oculta; um registro agregado por execução (PEPs, reprovados,
   alertas, divergências, valor em risco, nota da base). É a fonte do
   "vs. execução anterior" nos cards do PAINEL DO GESTOR
-- `CONFIG` — parâmetros editáveis
-- `EQUIVALENCIAS` — materiais equivalentes, no layout `COD MAT | DESC MAT | UND |
+- `CONFIG` — oculta; parâmetros editáveis
+- `EQUIVALENCIAS` — oculta; materiais equivalentes, no layout `COD MAT | DESC MAT | UND |
   TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA` (mesmo número em
   `EQUIVALENCIA` = códigos intercambiáveis). Na ANALISE SAP x PRJ, quando 2+ códigos
   do grupo aparecem no mesmo PEP4, só são ADERENTE se a quantidade TOTAL do grupo
@@ -59,6 +59,9 @@ nessa lista e acumulam histórico entre rodadas:
   grupos de versões novas da lista padrão (versão guardada no nome oculto
   `EQUIV_VERSAO`), sem repetir códigos nem reinserir o que foi apagado
 - `LOG EXECUCAO` — oculta; log da última rodada
+
+`CONFIG` e `EQUIVALENCIAS` ficam ocultas: para editar, clique com o botão direito
+em qualquer guia → **Reexibir** → escolha a aba. A próxima execução oculta de novo.
 
 Apagar `HISTORICO KPI` não quebra nada: a próxima execução recria a aba e os cards
 apenas ficam sem a linha de variação até haver duas rodadas registradas.

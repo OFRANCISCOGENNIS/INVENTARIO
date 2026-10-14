@@ -4105,6 +4105,26 @@ Private Sub GarantirConfig(wb As Workbook)
         tk = Replace(NormStr(parts(r)), " ", "")
         If tk <> "" And Not mFamDifAbs.Exists(tk) Then mFamDifAbs.Add tk, True
     Next r
+
+    OcultarAba ws      ' aba de apoio: some das guias (Reexibir para editar)
+End Sub
+
+' Oculta uma aba de apoio (CONFIG, EQUIVALENCIAS). xlSheetHidden, e nao
+' VeryHidden: o usuario reexibe pelo clique direito numa guia > Reexibir para
+' editar, e a proxima execucao oculta de novo. A aba ativa so pode ser oculta
+' se outra estiver visivel: antes ativa a primeira aba visivel diferente dela.
+Private Sub OcultarAba(ws As Worksheet)
+    If ws Is Nothing Then Exit Sub
+    If ws.Visible <> xlSheetVisible Then Exit Sub
+    On Error Resume Next
+    If ws.Parent.ActiveSheet Is ws Then
+        Dim w As Worksheet
+        For Each w In ws.Parent.Worksheets
+            If w.Visible = xlSheetVisible And Not w Is ws Then w.Activate : Exit For
+        Next w
+    End If
+    ws.Visible = xlSheetHidden
+    On Error GoTo 0
 End Sub
 
 Private Function CfgS(chave As String, padrao As String) As String
@@ -4313,6 +4333,8 @@ Private Sub GarantirEquivalencias(wb As Workbook)
     On Error Resume Next
     wb.Names.Add Name:="EQUIV_VERSAO", RefersTo:="=" & EQUIV_VERSAO_ATUAL, Visible:=False
     On Error GoTo 0
+
+    OcultarAba ws      ' aba de apoio: some das guias (Reexibir para editar)
 
     ' ---- leitura: colunas pelo cabecalho ----
     Dim cCod As Long, cGrp As Long
