@@ -50,6 +50,15 @@ Private mModoLote As Boolean
 Private mAvisoLote As String
 Private mUltimoOk As Boolean
 
+' Saude da execucao (bloco no PAINEL): uma linha por etapa e os avisos nao
+' fatais. Fonte de precos: qual elo da cadeia (aba interna / arquivo externo)
+' foi usado nesta execucao - antes uma troca de fonte passava despercebida.
+Private mEtapas As Collection       ' Array(etapa, ok, segundos, detalhe)
+Private mAvisosExec As String       ' avisos nao fatais (vbCrLf & "  - " & ...)
+Private mFontePrecos As String      ' faixa MIN/MAX (PRECO UNITARIO e referencias)
+Private mFontePrecosData As Variant ' data do arquivo externo; Empty = sem data
+Private mFontePrecosRef As String   ' preco de referencia do UC SUBVALORIZADO
+
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
 ' exibicao de SIT MAT/APROVACAO/MOTIVO (loop 2) em ProcessarSAPxPRJ.
@@ -370,6 +379,12 @@ Public Sub GerarInventario()
     mStep = "NOMES DEFINIDOS" : tt = Timer : On Error Resume Next : Err.Clear
     Call CriarNomesDefinidos(wb)
     FimEtapa Err.Number, Err.Description, mStep, tt : On Error GoTo ErrHandler
+
+    ' Saude da execucao no PAINEL, depois de TODAS as etapas (vai junto no
+    ' arquivo exportado pelo modo lote)
+    On Error Resume Next
+    If Not wsGestor Is Nothing Then EscreverSaudeExecucao wsGestor, wsBase
+    On Error GoTo ErrHandler
 
     LogAdd "Fim da geracao"
     Call GravarLog(wb)
@@ -1987,10 +2002,8 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     On Error Resume Next
     Set precos = CarregarPrecos(wsBase.Parent)
     If Err.Number <> 0 Then
-        LogAdd "ALERTA CRITICO: precos de referencia indisponiveis (" & Err.Description & _
-               ") - alerta UC SUBVALORIZADO desativado nesta execucao"
-        mFalhas = mFalhas & vbCrLf & "  - ALERTA CRITICO (aviso): precos de referencia " & _
-                  "indisponiveis, sem alerta UC SUBVALORIZADO - " & Err.Description
+        AvisoExec "ALERTA CRITICO: precos de referencia indisponiveis, alerta UC " & _
+                  "SUBVALORIZADO desativado nesta execucao - " & Err.Description
         Err.Clear
     End If
     On Error GoTo 0
@@ -2693,6 +2706,7 @@ Private Function CarregarPrecos(wb As Workbook) As Object
         End If
     End If
 
+    If precos.Count > 0 Then mFontePrecosRef = "aba PRECOS (" & Format(precos.Count, "#,##0") & " materiais)"
     ' Fallback: se nao houver aba "PRECOS", deriva preco = ponto medio (MIN+MAX)/2
     ' da BASE DE PRECOS (aba interna ou arquivo externo).
     If precos.Count = 0 Then
@@ -2705,6 +2719,7 @@ Private Function CarregarPrecos(wb As Workbook) As Object
             md = (mn + mx) / 2
             If md > 0 Then precos.Add CStr(k), md
         Next k
+        mFontePrecosRef = "ponto medio MIN/MAX da faixa de precos (" & Format(precos.Count, "#,##0") & " materiais)"
     End If
 
     Set CarregarPrecos = precos
@@ -2756,6 +2771,9 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     Dim wsP As Worksheet
     Dim wbExt As Workbook       ' workbook externo aberto por nos (p/ fechar depois)
     Set wbExt = Nothing
+    ' sem fonte o cache nao e gravado e a funcao roda de novo na etapa seguinte:
+    ' avisa so na primeira vez
+    Dim jaAvisou As Boolean : jaAvisou = (mFontePrecos <> "")
 
     ' --- 1) aba interna ---
     On Error Resume Next
@@ -2763,11 +2781,23 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     If wsP Is Nothing Then Set wsP = wb.Worksheets("BASE DE PRECOS")
     If wsP Is Nothing Then Set wsP = wb.Worksheets("BASE DE PRE" & ChrW(199) & "OS")
     On Error GoTo 0
+    If Not wsP Is Nothing Then mFontePrecos = "aba interna '" & wsP.Name & "'" : mFontePrecosData = Empty
 
     ' --- 2) arquivo externo ---
     If wsP Is Nothing Then
         Dim cam As String : cam = CaminhoBasePrecos(wb)
-        If Len(cam) = 0 Then Set CarregarFaixaPrecos = fx : Exit Function
+        If Len(cam) = 0 Then
+            mFontePrecos = "NENHUMA (sem aba BASE PRECOS e sem arquivo BASE DE PRECOS.xlsx nas pastas conhecidas)"
+            mFontePrecosData = Empty
+            If Not jaAvisou Then AvisoExec "PRECOS: nenhuma base de precos encontrada - PRECO UNITARIO " & _
+                                          "e alertas de preco ficam sem referencia"
+            Set CarregarFaixaPrecos = fx : Exit Function
+        End If
+        mFontePrecos = "arquivo externo '" & cam & "'"
+        mFontePrecosData = Empty
+        On Error Resume Next
+        mFontePrecosData = FileDateTime(cam)
+        On Error GoTo 0
         Dim nomeArq As String : nomeArq = Dir(cam)
         On Error Resume Next
         Dim wbJa As Workbook : Set wbJa = Workbooks(nomeArq)   ' ja aberto?
@@ -2776,7 +2806,12 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
             On Error Resume Next
             Set wbExt = Workbooks.Open(cam, ReadOnly:=True, UpdateLinks:=0)
             On Error GoTo 0
-            If wbExt Is Nothing Then Set CarregarFaixaPrecos = fx : Exit Function
+            If wbExt Is Nothing Then
+                mFontePrecos = "arquivo externo '" & cam & "' NAO ABRIU"
+                If Not jaAvisou Then AvisoExec "PRECOS: o arquivo " & cam & " nao abriu - PRECO UNITARIO " & _
+                                              "e alertas de preco ficam sem referencia"
+                Set CarregarFaixaPrecos = fx : Exit Function
+            End If
             Set wsP = wbExt.Worksheets(1)
         Else
             Set wsP = wbJa.Worksheets(1)
@@ -2821,6 +2856,12 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     End If
 
     If Not wbExt Is Nothing Then wbExt.Close SaveChanges:=False
+    If fx.Count = 0 Then
+        mFontePrecos = mFontePrecos & " (vazia: nenhum material lido)"
+        If Not jaAvisou Then AvisoExec "PRECOS: a base de precos usada nao tem materiais legiveis"
+    Else
+        mFontePrecos = mFontePrecos & " - " & Format(fx.Count, "#,##0") & " materiais"
+    End If
     Set mFaixaCache = fx
     Set CarregarFaixaPrecos = fx
 End Function
@@ -4042,12 +4083,133 @@ End Sub
 
 ' Registra o resultado de uma etapa no log; erro nao aborta o processo (erro granular).
 Private Sub FimEtapa(erroNum As Long, erroDesc As String, etapa As String, t0 As Double)
+    Dim seg As Double : seg = Timer - t0
+    If seg < 0 Then seg = seg + 86400           ' virada da meia-noite
     If erroNum <> 0 Then
         mFalhas = mFalhas & vbCrLf & "  - " & etapa & ": " & erroDesc
         LogAdd "FALHA [" & etapa & "]: (" & erroNum & ") " & erroDesc
     Else
-        LogAdd etapa & " OK (" & Format(Timer - t0, "0.0") & "s)"
+        LogAdd etapa & " OK (" & Format(seg, "0.0") & "s)"
     End If
+    If mEtapas Is Nothing Then Set mEtapas = New Collection
+    mEtapas.Add Array(etapa, (erroNum = 0), seg, IIf(erroNum <> 0, erroDesc, ""))
+End Sub
+
+' Aviso nao fatal da execucao (a analise seguiu, mas sem algo): vai para a
+' mensagem final, para o LOG e para o bloco SAUDE DA EXECUCAO do painel.
+Private Sub AvisoExec(ByVal msg As String)
+    mFalhas = mFalhas & vbCrLf & "  - " & msg
+    mAvisosExec = mAvisosExec & vbCrLf & "  - " & msg
+    LogAdd "AVISO: " & msg
+End Sub
+
+' Bloco SAUDE DA EXECUCAO no fim do PAINEL DO GESTOR: cada etapa com status e
+' tempo, a fonte de precos usada e os avisos. Com falha ou aviso, o subtitulo
+' do painel ganha o selo da execucao. Escrito depois de TODAS as etapas, entao
+' vai junto no arquivo exportado pelo modo lote (antes o aviso so existia na
+' MsgBox final e no LOG oculto, e o resultado exportado parecia completo).
+Private Sub EscreverSaudeExecucao(ws As Worksheet, wsBase As Worksheet)
+    Dim it As Variant, nFal As Long
+    If Not mEtapas Is Nothing Then
+        For Each it In mEtapas
+            If Not CBool(it(1)) Then nFal = nFal + 1
+        Next it
+    End If
+    Dim precoRuim As Boolean
+    precoRuim = (Left(mFontePrecos, 7) = "NENHUMA" Or InStr(mFontePrecos, "NAO ABRIU") > 0 _
+                 Or InStr(mFontePrecos, "vazia") > 0)
+    Dim selo As String, corSelo As Long
+    If nFal > 0 Then
+        selo = "ANALISE INCOMPLETA: " & nFal & " etapa(s) com falha" : corSelo = RGB(192, 0, 0)
+    ElseIf mAvisosExec <> "" Or precoRuim Then
+        selo = "ANALISE COM AVISOS" : corSelo = RGB(176, 124, 0)
+    Else
+        selo = "EXECUCAO OK" : corSelo = RGB(21, 115, 71)
+    End If
+
+    ' 3 linhas abaixo do ultimo conteudo do painel
+    Dim uR As Range : Set uR = ws.Cells.Find("*", , xlFormulas, xlPart, xlByRows, xlPrevious)
+    Dim r As Long : r = 3 : If Not uR Is Nothing Then r = uR.Row + 3
+
+    With ws.Range(ws.Cells(r, 1), ws.Cells(r, 8))
+        .Merge : .Value = "SAUDE DA EXECUCAO  -  " & selo
+        .Font.Name = "Segoe UI" : .Font.Size = 12 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = corSelo
+        .HorizontalAlignment = xlLeft : .VerticalAlignment = xlCenter : .IndentLevel = 1
+    End With
+    ws.Rows(r).RowHeight = 26
+    r = r + 1
+    SaudeLinha ws, r, "ETAPA", "STATUS", "TEMPO (s)", "DETALHE", RGB(31, 41, 59), RGB(235, 240, 248), True
+    r = r + 1
+    If Not mEtapas Is Nothing Then
+        For Each it In mEtapas
+            SaudeLinha ws, r, CStr(it(0)), IIf(CBool(it(1)), "OK", "FALHA"), Format(it(2), "0.0"), _
+                       CStr(it(3)), IIf(CBool(it(1)), RGB(231, 247, 237), RGB(252, 226, 228)), _
+                       IIf(CBool(it(1)), RGB(21, 115, 71), RGB(192, 0, 0)), False
+            r = r + 1
+        Next it
+    End If
+    ' fonte de precos (cadeia: aba interna -> arquivo externo)
+    Dim txtF As String : txtF = IIf(mFontePrecos <> "", mFontePrecos, "nao consultada")
+    If Not IsEmpty(mFontePrecosData) Then txtF = txtF & " - alterado em " & Format(mFontePrecosData, "dd/mm/yyyy")
+    SaudeLinha ws, r, "FONTE DE PRECOS (faixa MIN/MAX)", IIf(precoRuim, "ATENCAO", "OK"), "", txtF, _
+               IIf(precoRuim, RGB(255, 244, 214), RGB(244, 247, 250)), _
+               IIf(precoRuim, RGB(176, 124, 0), RGB(45, 52, 64)), False
+    r = r + 1
+    If mFontePrecosRef <> "" Then
+        SaudeLinha ws, r, "PRECO DE REFERENCIA (UC SUBVAL.)", "OK", "", mFontePrecosRef, _
+                   RGB(244, 247, 250), RGB(45, 52, 64), False
+        r = r + 1
+    End If
+    ' avisos nao fatais, um por linha
+    If mAvisosExec <> "" Then
+        Dim av As Variant
+        For Each av In Split(Mid(mAvisosExec, 3), vbCrLf)
+            If Trim(CStr(av)) <> "" Then
+                SaudeLinha ws, r, "AVISO", "ATENCAO", "", Trim(Replace(CStr(av), "  - ", "", 1, 1)), _
+                           RGB(255, 244, 214), RGB(176, 124, 0), False
+                r = r + 1
+            End If
+        Next av
+    End If
+
+    ' selo no subtitulo do painel ("Analise de Inventario - Base: ...")
+    If selo <> "EXECUCAO OK" Then
+        Dim rs As Long
+        For rs = 1 To 6
+            If Left(CStr(ws.Cells(rs, 1).Value), 21) = "Analise de Inventario" Then
+                ws.Cells(rs, 1).Value = CStr(ws.Cells(rs, 1).Value) & "   |   " & ChrW(&H26A0) & " " & selo
+                ws.Cells(rs, 1).Font.Color = RGB(255, 196, 0)
+                ws.Cells(rs, 1).Font.Bold = True
+                Exit For
+            End If
+        Next rs
+    End If
+End Sub
+
+' Uma linha do bloco SAUDE DA EXECUCAO: A:C etapa | D status | E tempo | F:H detalhe.
+Private Sub SaudeLinha(ws As Worksheet, ByVal r As Long, ByVal etapa As String, _
+        ByVal status As String, ByVal tempo As String, ByVal detalhe As String, _
+        ByVal corFundo As Long, ByVal corStatus As Long, ByVal cabecalho As Boolean)
+    ws.Range(ws.Cells(r, 1), ws.Cells(r, 3)).Merge
+    ws.Range(ws.Cells(r, 6), ws.Cells(r, 8)).Merge
+    ws.Cells(r, 1).Value = etapa : ws.Cells(r, 4).Value = status
+    ws.Cells(r, 5).Value = tempo : ws.Cells(r, 6).Value = detalhe
+    With ws.Range(ws.Cells(r, 1), ws.Cells(r, 8))
+        .Interior.Color = corFundo
+        .Font.Name = "Segoe UI" : .Font.Size = 9
+        .Font.Color = IIf(cabecalho, corStatus, RGB(45, 52, 64))
+        .Font.Bold = cabecalho
+        .VerticalAlignment = xlCenter
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(222, 226, 232)
+    End With
+    ws.Range(ws.Cells(r, 4), ws.Cells(r, 5)).HorizontalAlignment = xlCenter
+    If Not cabecalho Then
+        ws.Cells(r, 4).Font.Bold = True : ws.Cells(r, 4).Font.Color = corStatus
+    End If
+    ws.Cells(r, 1).IndentLevel = 1
+    ws.Rows(r).RowHeight = 18
 End Sub
 
 ' --------- CONFIG editavel (parametros centralizados na aba CONFIG) ---------
@@ -4075,6 +4237,7 @@ Private Function CfgPadrao() As Collection
     c.Add Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)")
     c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
     c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
+    c.Add Array("PRECOS_MAX_DIAS", 90, "Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO")
     Set CfgPadrao = c
 End Function
 
@@ -4207,6 +4370,8 @@ End Function
 Private Sub LogInit()
     Set mLog = New Collection
     mFalhas = "" : mT0 = Timer
+    Set mEtapas = New Collection : mAvisosExec = ""
+    mFontePrecos = "" : mFontePrecosData = Empty : mFontePrecosRef = ""
     LogAdd "Inicio da execucao"
 End Sub
 
@@ -4400,9 +4565,8 @@ Private Sub GarantirEquivalencias(wb As Workbook)
     Dim cCod As Long, cGrp As Long
     ColunasEquiv ws, cCod, cGrp
     If cCod = 0 Or cGrp = 0 Then
-        LogAdd "EQUIVALENCIAS: cabecalho sem COD MAT/EQUIVALENCIA - equivalencias ignoradas"
-        mFalhas = mFalhas & vbCrLf & "  - EQUIVALENCIAS (aviso): cabecalho sem as colunas " & _
-                  "COD MAT e EQUIVALENCIA - nenhuma equivalencia aplicada"
+        AvisoExec "EQUIVALENCIAS: cabecalho sem as colunas COD MAT e EQUIVALENCIA - " & _
+                  "nenhuma equivalencia aplicada"
         Exit Sub
     End If
 
@@ -4653,6 +4817,7 @@ End Function
 '   SIM = JUNTAR: uma analise com todas as bases (coluna ARQUIVO ORIGEM)
 '   NAO = SEPARAR: uma analise por base, cada uma salva ao lado do arquivo
 '         como "ANALISE INVENTARIO - <base>.xlsx", com resumo no final
+' Fluxo: LER (so leitura) -> PREVIA (nada alterado; OK/Cancelar) -> GRAVAR.
 Public Sub CarregarBases()
     Dim wbDest As Workbook : Set wbDest = ActiveWorkbook
 
@@ -4675,73 +4840,74 @@ Public Sub CarregarBases()
         Exit Sub
     End If
 
-    ' a aba de base atual sera substituida: avisa antes
-    Dim txtAviso As String
-    Dim wsAtual As Worksheet : Set wsAtual = AcharBaseInventario(wbDest)
-    If Not wsAtual Is Nothing Then
-        txtAviso = vbCrLf & vbCrLf & "A aba de base atual '" & wsAtual.Name & "' sera SUBSTITUIDA pelos dados carregados."
-    End If
     Dim juntar As Boolean : juntar = True
     If arqs.Count > 1 Then
         Select Case MsgBox(arqs.Count & " bases selecionadas." & vbCrLf & vbCrLf & _
                 "SIM = JUNTAR todas numa unica analise" & vbCrLf & _
-                "NAO = SEPARAR: uma analise por base, salva ao lado de cada arquivo" & txtAviso, _
+                "NAO = SEPARAR: uma analise por base, salva ao lado de cada arquivo" & vbCrLf & vbCrLf & _
+                "Antes de alterar qualquer coisa aparece uma previa da carga.", _
                 vbYesNoCancel + vbQuestion, "Carregar bases")
             Case vbYes: juntar = True
             Case vbNo: juntar = False
             Case Else: Exit Sub
         End Select
-    ElseIf txtAviso <> "" Then
-        If MsgBox("Carregar '" & NomeArquivo(CStr(arqs(1))) & "' e rodar a analise?" & txtAviso, _
-                  vbOKCancel + vbQuestion, "Carregar bases") <> vbOK Then Exit Sub
     End If
 
+    ' 1) LER: so leitura, nada muda neste arquivo
+    Dim msgL As String
+    Dim blocos As Collection : Set blocos = LerBases(arqs, msgL)
+    If blocos.Count = 0 Then
+        MsgBox "Nenhuma base foi lida:" & msgL, vbExclamation, "Carregar bases"
+        Exit Sub
+    End If
+
+    ' 2) PREVIA (dry-run): o que vai entrar, por arquivo, antes de substituir a base
+    If MsgBox(PreviaCarga(wbDest, blocos, msgL, juntar), vbOKCancel + vbQuestion, _
+              "Carregar bases - previa") <> vbOK Then Exit Sub
+
+    ' 3) GRAVAR e analisar
     If juntar Then
-        Dim nLin As Long, msgL As String
-        If Not ImportarBases(wbDest, arqs, nLin, msgL) Then
-            MsgBox "Nenhuma base foi carregada:" & msgL, vbExclamation, "Carregar bases"
+        Dim nLin As Long
+        If Not GravarBase(wbDest, blocos, nLin) Then
+            MsgBox "Falha ao gravar a base neste arquivo.", vbCritical, "Carregar bases"
             Exit Sub
-        End If
-        If msgL <> "" Then
-            MsgBox Format(nLin, "#,##0") & " linha(s) carregada(s), com avisos:" & msgL & _
-                   vbCrLf & vbCrLf & "A analise sera gerada com o que foi carregado.", _
-                   vbExclamation, "Carregar bases"
         End If
         wbDest.Activate
         GerarInventario
     Else
-        ProcessarLoteSeparado wbDest, arqs
+        ProcessarLoteSeparado wbDest, blocos, msgL
     End If
 End Sub
 
-' Modo SEPARAR: para cada base, carrega, roda GerarInventario em modo lote e
-' exporta o resultado; no fim, um resumo com o que deu certo e o que falhou.
-Private Sub ProcessarLoteSeparado(wbDest As Workbook, arqs As Collection)
-    Dim it As Variant, um As Collection, resumo As String, nOk As Long
-    Dim nL As Long, mL As String, destino As String
+' Modo SEPARAR: para cada base ja lida, grava, roda GerarInventario em modo lote
+' e exporta o resultado; no fim, um resumo com o que deu certo e o que falhou.
+Private Sub ProcessarLoteSeparado(wbDest As Workbook, blocos As Collection, ByVal msgLeitura As String)
+    Dim bl As Variant, um As Collection, resumo As String, nOk As Long
+    Dim nL As Long, destino As String
     mModoLote = True
     On Error GoTo Falha
-    For Each it In arqs
-        Set um = New Collection : um.Add CStr(it)
-        nL = 0 : mL = ""
-        If ImportarBases(wbDest, um, nL, mL) Then
+    For Each bl In blocos
+        Set um = New Collection : um.Add bl
+        nL = 0
+        If GravarBase(wbDest, um, nL) Then
             wbDest.Activate
             GerarInventario
             If mUltimoOk Then
-                destino = ExportarResultado(wbDest, CStr(it))
-                resumo = resumo & vbCrLf & "  OK    " & NomeArquivo(CStr(it)) & "  ->  " & NomeArquivo(destino) & _
-                         IIf(mFalhas <> "", "  (etapas com aviso)", "")
+                destino = ExportarResultado(wbDest, CStr(bl(3)))
+                resumo = resumo & vbCrLf & "  OK    " & bl(1) & "  ->  " & NomeArquivo(destino) & _
+                         IIf(mFalhas <> "", "  (com avisos - ver SAUDE DA EXECUCAO no painel)", "")
                 nOk = nOk + 1
             Else
-                resumo = resumo & vbCrLf & "  ERRO  " & NomeArquivo(CStr(it)) & ": " & Replace(mAvisoLote, vbCrLf, " ")
+                resumo = resumo & vbCrLf & "  ERRO  " & bl(1) & ": " & Replace(mAvisoLote, vbCrLf, " ")
             End If
         Else
-            resumo = resumo & vbCrLf & "  ERRO  " & NomeArquivo(CStr(it)) & ":" & Replace(mL, vbCrLf, " ")
+            resumo = resumo & vbCrLf & "  ERRO  " & bl(1) & ": falha ao gravar a base"
         End If
-    Next it
+    Next bl
     mModoLote = False
-    MsgBox nOk & " de " & arqs.Count & " base(s) analisada(s)." & vbCrLf & resumo, _
-           IIf(nOk = arqs.Count, vbInformation, vbExclamation), "Carregar bases"
+    If msgLeitura <> "" Then resumo = resumo & vbCrLf & vbCrLf & "Nao lidos:" & msgLeitura
+    MsgBox nOk & " de " & blocos.Count & " base(s) analisada(s)." & vbCrLf & resumo, _
+           IIf(nOk = blocos.Count And msgLeitura = "", vbInformation, vbExclamation), "Carregar bases"
     Exit Sub
 Falha:
     mModoLote = False
@@ -4751,18 +4917,13 @@ Falha:
            "Processadas ate aqui:" & resumo, vbCritical, "Carregar bases"
 End Sub
 
-' Le os arquivos de base e grava todos, juntos, na aba de base deste arquivo
-' (a que AcharBaseInventario encontra; sem ela, cria "BASE INVENTARIO").
-' O cabecalho do 1o arquivo valido define as colunas; os demais sao casados
-' por NOME (com os aliases antigos/novos), entao a ordem das colunas pode
-' variar entre bases. Ultima coluna: ARQUIVO ORIGEM. msg recebe os avisos
-' (arquivo que nao abriu, sem base, coluna ausente). False = nada carregado.
-Private Function ImportarBases(wbDest As Workbook, arqs As Collection, _
-        ByRef nLin As Long, ByRef msg As String) As Boolean
-    Dim blocos As Collection : Set blocos = New Collection     ' Array(dados, nome do arquivo)
-    Dim hdr() As String, nCol As Long
+' LER: abre cada arquivo so para leitura (sem eventos), acha a aba da base e
+' le a tabela. Cada base valida vira Array(dados, nome do arquivo, nome da aba,
+' caminho). msg recebe o que nao deu para ler. Nada muda neste arquivo.
+Private Function LerBases(arqs As Collection, ByRef msg As String) As Collection
+    Dim blocos As Collection : Set blocos = New Collection
     Dim it As Variant, wbS As Workbook, wsS As Worksheet, jaAberto As Boolean
-    Dim d As Variant, c As Long, nomeA As String
+    Dim d As Variant, nomeA As String
     Dim evOld As Boolean : evOld = Application.EnableEvents
     On Error GoTo Falha
     Application.ScreenUpdating = False
@@ -4800,62 +4961,141 @@ Private Function ImportarBases(wbDest As Workbook, arqs As Collection, _
                 If IsEmpty(d) Then
                     msg = msg & vbCrLf & "  - " & nomeA & ": aba '" & wsS.Name & "' sem linhas de dados"
                 Else
-                    If nCol = 0 Then
-                        ' 1o arquivo valido define as colunas (sem ARQUIVO ORIGEM,
-                        ' que vai sempre no fim, e sem coluna de cabecalho vazio)
-                        ReDim hdr(1 To UBound(d, 2))
-                        For c = 1 To UBound(d, 2)
-                            If Not IsError(d(1, c)) Then
-                                If Trim(CStr(d(1, c))) <> "" And NormStr(CStr(d(1, c))) <> "ARQUIVO ORIGEM" Then
-                                    nCol = nCol + 1 : hdr(nCol) = Trim(CStr(d(1, c)))
-                                End If
-                            End If
-                        Next c
-                    End If
-                    blocos.Add Array(d, nomeA)
-                    nLin = nLin + UBound(d, 1) - 1
+                    blocos.Add Array(d, nomeA, wsS.Name, CStr(it))
                 End If
             End If
             If Not jaAberto Then wbS.Close SaveChanges:=False
         End If
     Next it
     Application.EnableEvents = evOld
-    If blocos.Count = 0 Or nCol = 0 Then GoTo Fim
+    Set LerBases = blocos
+    Exit Function
+Falha:
+    Application.EnableEvents = evOld
+    msg = msg & vbCrLf & "  - erro " & Err.Number & " na leitura: " & Err.Description
+    Set LerBases = blocos
+End Function
 
-    ' ---- junta os blocos casando as colunas por nome ----
+' Colunas de destino: o cabecalho do 1o bloco, sem ARQUIVO ORIGEM (que vai
+' sempre no fim) e sem coluna de cabecalho vazio.
+Private Sub CabecalhoDestino(blocos As Collection, ByRef hdr() As String, ByRef nCol As Long)
+    Dim b1 As Variant : b1 = blocos(1)
+    Dim d As Variant : d = b1(0)
+    Dim c As Long
+    nCol = 0
+    ReDim hdr(1 To UBound(d, 2))
+    For c = 1 To UBound(d, 2)
+        If Not IsError(d(1, c)) Then
+            If Trim(CStr(d(1, c))) <> "" And NormStr(CStr(d(1, c))) <> "ARQUIVO ORIGEM" Then
+                nCol = nCol + 1 : hdr(nCol) = Trim(CStr(d(1, c)))
+            End If
+        End If
+    Next c
+End Sub
+
+' Casa as colunas de um bloco com o cabecalho de destino, por NOME (com os
+' aliases antigos/novos): src(c) = coluna no bloco, 0 = ausente. faltam recebe
+' os nomes ausentes, separados por virgula.
+Private Function MapearBloco(d As Variant, hdr() As String, ByVal nCol As Long, _
+                             ByRef faltam As String) As Long()
+    Dim c As Long, k As String
+    Dim hS() As Variant : ReDim hS(1 To 1, 1 To UBound(d, 2))
+    For c = 1 To UBound(d, 2)
+        hS(1, c) = d(1, c)
+    Next c
+    Dim mS As Object : Set mS = MapaDeCabecalho(hS)
+    Dim src() As Long : ReDim src(1 To nCol)
+    faltam = ""
+    For c = 1 To nCol
+        k = NormStr(hdr(c))
+        If mS.Exists(k) Then
+            src(c) = mS(k)
+        ElseIf mS.Exists(CanonicoBase(k)) Then
+            src(c) = mS(CanonicoBase(k))
+        Else
+            faltam = faltam & IIf(faltam <> "", ", ", "") & hdr(c)
+        End If
+    Next c
+    MapearBloco = src
+End Function
+
+' PREVIA (dry-run): texto com o que a carga vai fazer - linhas por arquivo,
+' colunas ausentes (modo juntar), arquivos nao lidos e a aba que sera
+' substituida. Nao altera nada. Limitado a 8 arquivos para caber na MsgBox.
+Private Function PreviaCarga(wbDest As Workbook, blocos As Collection, _
+                             ByVal msgL As String, ByVal juntar As Boolean) As String
+    Dim t As String, hdr() As String, nCol As Long, src() As Long, faltam As String
+    Dim bl As Variant, nArq As Long, nTot As Long, nLinB As Long
+    CabecalhoDestino blocos, hdr, nCol
+    t = "PREVIA DA CARGA - nada foi alterado ainda" & vbCrLf & vbCrLf
+    For Each bl In blocos
+        nArq = nArq + 1
+        nLinB = UBound(bl(0), 1) - 1
+        nTot = nTot + nLinB
+        If nArq <= 8 Then
+            t = t & "- " & bl(1) & "  [aba '" & bl(2) & "']: " & Format(nLinB, "#,##0") & " linha(s)" & vbCrLf
+            If juntar Then
+                src = MapearBloco(bl(0), hdr, nCol, faltam)
+                If faltam <> "" Then
+                    If Len(faltam) > 90 Then faltam = Left(faltam, 87) & "..."
+                    t = t & "      sem: " & faltam & " (fica vazia)" & vbCrLf
+                End If
+            End If
+        End If
+    Next bl
+    If nArq > 8 Then t = t & "... e mais " & (nArq - 8) & " arquivo(s)" & vbCrLf
+    If msgL <> "" Then
+        If Len(msgL) > 300 Then msgL = Left(msgL, 297) & "..."
+        t = t & vbCrLf & "NAO serao carregados:" & msgL & vbCrLf
+    End If
+    If juntar Then
+        t = t & vbCrLf & "Total: " & Format(nTot, "#,##0") & " linha(s) numa unica analise"
+    Else
+        t = t & vbCrLf & nArq & " analise(s) separada(s), salvas ao lado de cada arquivo"
+    End If
+    Dim wsAt As Worksheet : Set wsAt = AcharBaseInventario(wbDest)
+    If Not wsAt Is Nothing Then t = t & vbCrLf & "A aba de base atual '" & wsAt.Name & "' sera SUBSTITUIDA."
+    t = t & vbCrLf & vbCrLf & "OK = carregar e analisar     Cancelar = nao altera nada"
+    PreviaCarga = t
+End Function
+
+' GRAVAR: junta os blocos (colunas casadas por nome) e grava na aba de base
+' deste arquivo (a que AcharBaseInventario encontra; sem ela, cria "BASE
+' INVENTARIO"). Ultima coluna: ARQUIVO ORIGEM.
+Private Function GravarBase(wbDest As Workbook, blocos As Collection, ByRef nLin As Long) As Boolean
+    Dim hdr() As String, nCol As Long, c As Long
+    On Error GoTo Falha
+    CabecalhoDestino blocos, hdr, nCol
+    If nCol = 0 Then Exit Function
+    Dim bl As Variant
+    nLin = 0
+    For Each bl In blocos
+        nLin = nLin + UBound(bl(0), 1) - 1
+    Next bl
+
     Dim outD() As Variant : ReDim outD(1 To nLin + 1, 1 To nCol + 1)
     For c = 1 To nCol
         outD(1, c) = hdr(c)
     Next c
     outD(1, nCol + 1) = "ARQUIVO ORIGEM"
-    Dim bl As Variant, mS As Object, src() As Long, cOrig As Long
-    Dim r As Long, rOut As Long, k As String, hS() As Variant
+    Dim d As Variant, src() As Long, faltam As String, cOrig As Long
+    Dim r As Long, rOut As Long, hO() As Variant, mO As Object
     rOut = 1
     For Each bl In blocos
         d = bl(0)
-        ReDim hS(1 To 1, 1 To UBound(d, 2))
+        src = MapearBloco(d, hdr, nCol, faltam)
+        ' base que ja veio de uma juncao anterior mantem a origem dela
+        ReDim hO(1 To 1, 1 To UBound(d, 2))
         For c = 1 To UBound(d, 2)
-            hS(1, c) = d(1, c)
+            hO(1, c) = d(1, c)
         Next c
-        Set mS = MapaDeCabecalho(hS)
-        ReDim src(1 To nCol)
-        For c = 1 To nCol
-            k = NormStr(hdr(c))
-            If mS.Exists(k) Then
-                src(c) = mS(k)
-            ElseIf mS.Exists(CanonicoBase(k)) Then
-                src(c) = mS(CanonicoBase(k))
-            Else
-                msg = msg & vbCrLf & "  - " & bl(1) & ": sem a coluna " & hdr(c) & " (fica vazia)"
-            End If
-        Next c
-        cOrig = 0 : If mS.Exists("ARQUIVO ORIGEM") Then cOrig = mS("ARQUIVO ORIGEM")
+        Set mO = MapaDeCabecalho(hO)
+        cOrig = 0 : If mO.Exists("ARQUIVO ORIGEM") Then cOrig = mO("ARQUIVO ORIGEM")
         For r = 2 To UBound(d, 1)
             rOut = rOut + 1
             For c = 1 To nCol
                 If src(c) > 0 Then outD(rOut, c) = d(r, src(c))
             Next c
-            ' base que ja veio de uma juncao anterior mantem a origem dela
             outD(rOut, nCol + 1) = bl(1)
             If cOrig > 0 Then
                 If Not IsError(d(r, cOrig)) Then
@@ -4865,7 +5105,6 @@ Private Function ImportarBases(wbDest As Workbook, arqs As Collection, _
         Next r
     Next bl
 
-    ' ---- grava na aba de base deste arquivo ----
     Dim wsB As Worksheet : Set wsB = AcharBaseInventario(wbDest)
     If wsB Is Nothing Then
         On Error Resume Next
@@ -4881,14 +5120,10 @@ Private Function ImportarBases(wbDest As Workbook, arqs As Collection, _
     wsB.Range(wsB.Cells(1, 1), wsB.Cells(nLin + 1, nCol + 1)).Value = outD
     wsB.Rows(1).Font.Bold = True
     wsB.Range(wsB.Columns(1), wsB.Columns(nCol + 1)).ColumnWidth = 14
-    ImportarBases = True
-Fim:
-    Application.EnableEvents = evOld
+    GravarBase = True
     Exit Function
 Falha:
-    Application.EnableEvents = evOld
-    msg = msg & vbCrLf & "  - erro " & Err.Number & " na carga: " & Err.Description
-    ImportarBases = False
+    GravarBase = False
 End Function
 
 ' Tabela da aba (linha 1 = cabecalho) como array 2D; Empty sem linhas de dados.
@@ -5420,6 +5655,26 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
         IIf(faltantes = "", "Todas presentes", "Faltam: " & Left(faltantes, Len(faltantes) - 2)), _
         IIf(faltantes = "", "OK", "ATENCAO"), _
         "Colunas opcionais enriquecem alertas (ODI/ODM, unidade, valores em R$)."
+
+    ' base de precos: fonte usada nesta execucao e idade do arquivo externo
+    ' (PRECO UNITARIO e ALERTA CRITICO ja rodaram e registraram a fonte)
+    Dim maxDias As Double : maxDias = CfgD("PRECOS_MAX_DIAS", 90)
+    Dim resP As String, stP As String
+    If mFontePrecos = "" Then
+        resP = "Nao consultada nesta execucao" : stP = "OK"
+    ElseIf Left(mFontePrecos, 7) = "NENHUMA" Or InStr(mFontePrecos, "NAO ABRIU") > 0 _
+           Or InStr(mFontePrecos, "vazia") > 0 Then
+        resP = mFontePrecos : stP = "ATENCAO"
+    ElseIf IsEmpty(mFontePrecosData) Then
+        resP = "Aba interna (sem data para conferir)" : stP = "OK"
+    Else
+        Dim diasP As Long : diasP = DateDiff("d", mFontePrecosData, Now)
+        resP = "Arquivo alterado em " & Format(mFontePrecosData, "dd/mm/yyyy") & " (" & diasP & " dias)"
+        stP = IIf(diasP > maxDias, "ATENCAO", "OK")
+    End If
+    DiagAdd chk, nChk, nCrit, nAten, "Base de precos atualizada", resP, stP, _
+        "Faixas MIN/MAX antigas distorcem PRECO UNITARIO e os alertas de preco. Atualize a " & _
+        "BASE DE PRECOS (limite: " & maxDias & " dias - CONFIG PRECOS_MAX_DIAS)."
 
     Dim nota As Double : nota = NotaSaude(nCrit, nAten)
     Dim rotSaude As String, corSaude As Long
@@ -5998,6 +6253,16 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "SinaisOpostos SAP 0 / PRJ -3 = ok (zero nao tem sinal)", (SinaisOpostos(0, -3) = "")
     avT = AvaliarLinha("COM", "PARAFUSO", 3, -3, "ADERENTE", False)
     RegTest nomes, oks, det, cnt, "AvaliarLinha SAP 3 / PRJ -3: NAO ADERENTE", (avT.ViolaOD And Not avT.EhAder)
+    ' Carga de bases: casa colunas por nome e lista as ausentes (previa)
+    Dim dMB(1 To 2, 1 To 2) As Variant
+    dMB(1, 1) = "MATERIAL" : dMB(1, 2) = "ATENDIDO SAP" : dMB(2, 1) = 105010022 : dMB(2, 2) = 3
+    Dim hMB(1 To 3) As String
+    hMB(1) = "COD MAT" : hMB(2) = "MAT LIB SAP" : hMB(3) = "FAMILIA"
+    Dim fMB As String, sMB() As Long
+    Dim vMB As Variant : vMB = dMB
+    sMB = MapearBloco(vMB, hMB, 3, fMB)
+    RegTest nomes, oks, det, cnt, "MapearBloco casa nomes novos e lista a ausente", _
+            (sMB(1) = 1 And sMB(2) = 2 And sMB(3) = 0 And fMB = "FAMILIA")
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")

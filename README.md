@@ -33,8 +33,19 @@ Importa as extrações de análise de carga e roda a análise, sem copiar e cola
      `HISTORICO` e o "vs. execução anterior" não são atualizados (comparariam
      bases diferentes).
 
-A aba de base atual deste arquivo é **substituída** pelos dados carregados (a macro
-pede confirmação antes). Os arquivos de base são abertos só para leitura.
+Antes de alterar qualquer coisa aparece uma **prévia** (dry-run): linhas por arquivo,
+colunas ausentes, arquivos que não serão carregados e a aba que será substituída.
+**OK** carrega e analisa; **Cancelar** não altera nada. Os arquivos de base são
+abertos só para leitura.
+
+## Saúde da execução
+
+Ao fim de cada análise, o PAINEL DO GESTOR ganha o bloco **SAÚDE DA EXECUÇÃO**: cada
+etapa com status e tempo, a **fonte de preços** usada (aba interna ou arquivo externo,
+com a data) e os avisos não fatais. Se algo falhou, o subtítulo do painel mostra
+"ANÁLISE INCOMPLETA" (ou "ANÁLISE COM AVISOS"). O bloco vai junto no arquivo exportado
+pelo modo "separar". O DIAGNÓSTICO BASE confere a idade da base de preços (limite
+`PRECOS_MAX_DIAS` na CONFIG, padrão 90 dias).
 
 ## Abas persistentes
 
