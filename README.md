@@ -75,7 +75,7 @@ nessa lista e acumulam histórico entre rodadas:
   for o mesmo número no SAP e no PRJ (sem tolerância, em qualquer família): SAP 3
   num código e PRJ 9 no outro = NÃO ADERENTE; 9 x 10 também. Cada linha mantém o próprio código e descrição; o MOTIVO cita
   os dois e o total. Um código em dois grupos une os grupos.
-  Nasce com a lista padrão da área (grupos 1–34, sem o 10 e o 28, que repetiam o 8
+  Nasce com a lista padrão da área (grupos 1–34 e 36–41, sem o 10 e o 28, que repetiam o 8
   e o 24) e o grupo 35 (`105300003` = `105300005`, que muda de número quando a área
   passa a usar o dele). A aba é do usuário: a macro só acrescenta
   grupos de versões novas da lista padrão (versão guardada no nome oculto

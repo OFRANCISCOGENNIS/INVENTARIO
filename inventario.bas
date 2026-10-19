@@ -40,7 +40,7 @@ Private Const ABA_KPI As String = "HISTORICO KPI"
 ' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
 ' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
 ' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
-Private Const EQUIV_VERSAO_ATUAL As Long = 4
+Private Const EQUIV_VERSAO_ATUAL As Long = 5
 
 ' Modo lote de CarregarBases (uma analise por base): GerarInventario nao abre
 ' MsgBox (o texto fica em mAvisoLote para o resumo) e nao grava HISTORICO nem
@@ -4706,6 +4706,19 @@ Private Function EquivPadrao() As Collection
     ' 13 (v3) e o 23 (v4); fica depois do ultimo grupo dela
     c.Add Split("105300003|||||35|1", "|")
     c.Add Split("105300005|||||35|1", "|")
+    ' versao 5 (122120026 e 122120003 ja estao no grupo 22: 22 + 37 + 41 se unem na leitura)
+    c.Add Split("102110178|TRAFO DT 1F 34,5KV FN 10KVA 220V OV|UM|UC|TRAFO|36|5", "|")
+    c.Add Split("102110181|TRAFO DT 1F 34,5KV FN 10KVA 440/220(M)OV|UM|UC|TRAFO|36|5", "|")
+    c.Add Split("122120026|CABO COB AL 150MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|37|5", "|")
+    c.Add Split("122120028|CABO COB AL 150MM 35KV XLPE+HDPE+SMC|M|UC|COND PROT|37|5", "|")
+    c.Add Split("133000127|POSTE CONC DT B-4,5 12M 2000DAN PDE|UN|UC|POSTE RD|38|5", "|")
+    c.Add Split("133000041|POSTE CONC DT B-4,5 12M 2000DAN BLQ|UN|UC|POSTE RD|38|5", "|")
+    c.Add Split("102100064|TD 3F 13,8KV 45KVA OV 3T 380/220V PDE|UN|UC|TRAFO|39|5", "|")
+    c.Add Split("102100373|TD,3F,13,8-0,38/0,22kV,45KVA,4TAPs(DAN)|UN|UC|TRAFO|39|5", "|")
+    c.Add Split("122120033|CABO COB AL 50MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|40|5", "|")
+    c.Add Split("122120006|CABO COB AL CA 50MM2 15KV XLPE CZ BLQ|M|UC|COND PROT|40|5", "|")
+    c.Add Split("122120003|CABO COB AL CA 150MM2 15KV XLPE CZ(BLQ)|M|UC|COND PROT|41|5", "|")
+    c.Add Split("122120026|CABO COB AL 150MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|41|5", "|")
     Set EquivPadrao = c
 End Function
 
