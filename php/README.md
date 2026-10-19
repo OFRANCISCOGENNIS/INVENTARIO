@@ -41,11 +41,25 @@ Windows-1252). A aba da base é achada pelos títulos antigos (`MAT LIB SAP`…)
 php -S 127.0.0.1:8000 -t public
 ```
 
-Abra `http://127.0.0.1:8000`, envie as bases (e, se quiser, a base de preços) e veja o
-relatório em guias, com botões para baixar o XLSX e o JSON. Cada tabela da página mostra até
-500 linhas; o XLSX traz todas. Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo: uma base de
-30 mil linhas leva cerca de 10 s e cabe nos 512 MB do plano gratuito do Render. Em produção, aponte o
-servidor web para `public/` e mantenha `storage/` fora da raiz pública.
+Abra `http://127.0.0.1:8000`. A página tem três telas:
+
+- **Nova análise**: arraste ou selecione as bases, escolha *Juntar* ou *Separar* (com mais de
+  um arquivo), inclua a base de preços MIN/MAX se quiser e clique em **Executar análise**.
+- **Resultados**: indicadores clicáveis (filtram a tabela), pesquisa, filtro por status e por
+  faixa de preço, ordenação por coluna, 25 linhas por página e detalhe SAP x PRJ com o motivo
+  do veredito ao clicar numa linha. Exporta os registros filtrados ou todos em CSV e baixa o
+  relatório completo em XLSX/JSON. Em *Relatório completo* ficam as demais abas (painel,
+  alertas, racionalização, preço unitário, ranking, diagnóstico, devoluções).
+- **Ajuda**: passo a passo e o significado de cada status.
+
+Status de cada linha: **Não aderente** (SIT MAT não aderente), **Sem correspondência** (só SAP
+ou só PRJ têm quantidade), **Verificar** (item aderente em obra reprovada ou sem UC) e
+**Aderente**. A tela usa as fontes Inter e JetBrains Mono, servidas pelo próprio site
+(`public/assets/fonts`).
+
+Em produção, aponte o servidor web para `public/` e mantenha `storage/` fora da raiz pública.
+Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo: uma base de 30 mil linhas leva cerca de
+10 s e cabe nos 512 MB do plano gratuito do Render.
 
 ### Publicar o site na internet (Render)
 
