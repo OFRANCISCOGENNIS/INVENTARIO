@@ -3,6 +3,9 @@
 `inventario.bas` é o módulo padrão (`Option Explicit`) usado pela pasta de trabalho
 `INVENTARIO 3.0.xlsx`.
 
+A mesma análise também existe em PHP (linha de comando e página web), na pasta
+[`php/`](php/README.md).
+
 ## Como instalar no Excel
 
 Importe o módulo em vez de colar o código:
