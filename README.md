@@ -50,6 +50,14 @@ com a data) e os avisos não fatais. Se algo falhou, o subtítulo do painel most
 pelo modo "separar". O DIAGNÓSTICO BASE confere a idade da base de preços (limite
 `PRECOS_MAX_DIAS` na CONFIG, padrão 90 dias).
 
+## Discrepância de valor de material (ODI)
+
+Na aba **RANKING DE RISCO**, a seção "DISCREPANCIA DE VALOR DE MATERIAL (ODI)" compara o
+preço unitário (VALOR / MAT LIB SAP) de cada linha de PEP **ODI** com a **média do mesmo
+código** em todas as linhas ODI da base. Fora de ±30% (parâmetro `DISCREP_VALOR_PCT` na
+CONFIG) é discrepância, acima ou abaixo da média. Código com um único lançamento em ODI não
+tem com o que ser comparado e fica de fora. A contagem também entra no DIAGNÓSTICO da obra.
+
 ## Abas persistentes
 
 A macro apaga e recria as abas de análise a cada execução, mas estas **não** entram

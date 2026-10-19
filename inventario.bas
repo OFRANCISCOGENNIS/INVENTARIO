@@ -3072,6 +3072,19 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     Dim p4Val As Object : Set p4Val = CreateObject("Scripting.Dictionary")  ' soma |VALOR|
     Dim p4P3  As Object : Set p4P3  = CreateObject("Scripting.Dictionary")  ' PEP4 -> PEP3
 
+    ' Discrepancia de valor de material (ODI): PU de cada linha x media do
+    ' codigo. Vira secao propria no fim da aba e entra no DIAGNOSTICO da obra.
+    Dim dvTol As Double : dvTol = CfgD("DISCREP_VALOR_PCT", 0.3)
+    Dim dvItens As Collection : Set dvItens = DiscrepValorODI(AcharBaseInventario(wb), dvTol)
+    Dim dvOb As Object : Set dvOb = CreateObject("Scripting.Dictionary")      ' PEP3 -> n discrepancias
+    Dim dvIt As Variant, dvP3 As String
+    For Each dvIt In dvItens
+        dvP3 = CStr(dvIt(0))
+        If dvP3 <> "" Then
+            If dvOb.Exists(dvP3) Then dvOb(dvP3) = dvOb(dvP3) + 1 Else dvOb.Add dvP3, 1
+        End If
+    Next dvIt
+
     ' 1) ANALISE SAP x PRJ (dados a partir da linha 10): valor + aprovacao
     '    (col 2 = PEP4, 6 = VALOR, 9 = MAT LIB SAP, 10 = MAT PRJ CAD, 14 = APROVACAO)
     Dim lastD As Long : lastD = wsDet.Cells(wsDet.Rows.Count, 1).End(xlUp).Row
@@ -3260,6 +3273,9 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
                 If vSo > 0 Then diag = diag & " (sobrepreco " & FmtKPI(vSo) & ")"
             End If
             If nCo > 0 Then diag = diag & IIf(diag <> "", " | ", "") & nCo & " COM fora do previsto"
+            If dvOb.Exists(p3) Then
+                diag = diag & IIf(diag <> "", " | ", "") & dvOb(p3) & " discrepancia(s) de valor de material"
+            End If
             If p3Itn.Exists(p3) And Not p3Bx.Exists(p3) Then
                 diag = diag & IIf(diag <> "", " | ", "") & "nenhum material baixado no PRJ"
             End If
@@ -3345,6 +3361,12 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     Dim rSec As Long
     If nOb > 0 Then rSec = 3 + nOb + 3 Else rSec = 7
     SecaoSemBaixaPRJ ws, rSec, p3Itn, p3Bx, p3Lib, valOb, repOb, p4Itn, p4Bx, p4Lib, p4Val, p4P3
+
+    ' Secao de discrepancia de valor de material, 3 linhas abaixo da anterior
+    Dim uSec As Range : Set uSec = ws.Cells.Find("*", , xlFormulas, xlPart, xlByRows, xlPrevious)
+    Dim rDv As Long : rDv = rSec + 6
+    If Not uSec Is Nothing Then rDv = uSec.Row + 4
+    SecaoDiscrepValor ws, rDv, dvItens, dvTol
 
     On Error Resume Next
     ws.Activate
@@ -3527,6 +3549,192 @@ Private Sub OrdenarPorValor(pp() As String, vl() As Double, ByVal lo As Long, By
             tV = vl(a) : vl(a) = vl(m) : vl(m) = tV
         End If
     Next a
+End Sub
+
+' ===========================================================================
+'  DISCREPANCIA DE VALOR DE MATERIAL (ODI)
+'  Preco unitario (VALOR / MAT LIB SAP) de cada linha de PEP ODI comparado com
+'  a MEDIA do mesmo codigo de material em todas as linhas ODI da base. Fora de
+'  +/- DISCREP_VALOR_PCT (padrao 30%) = discrepancia. Codigo com um unico
+'  lancamento ODI nao tem com o que comparar e fica de fora.
+' ===========================================================================
+
+' Desvio do PU em relacao a media, em fracao (+0,45 = 45% acima).
+Private Function DesvioMedia(ByVal pu As Double, ByVal media As Double) As Double
+    If media = 0 Then Exit Function
+    DesvioMedia = (pu - media) / Abs(media)
+End Function
+
+' True quando o PU passa de tol (fracao) acima ou abaixo da media. O limite
+' exato (30,0%) nao e discrepancia; folga de 1e-9 contra arredondamento.
+Private Function EhDiscrepValor(ByVal pu As Double, ByVal media As Double, _
+                                ByVal tol As Double) As Boolean
+    If media = 0 Then Exit Function
+    EhDiscrepValor = (Abs(DesvioMedia(pu, media)) > tol + 0.000000001)
+End Function
+
+' Linhas ODI com PU discrepante, da maior para a menor diferenca. Cada item:
+' Array(PEP3, PEP4, COD, DESC, QTD, VALOR, PU, MEDIA, DESVIO, N LANCAMENTOS).
+Private Function DiscrepValorODI(ByVal wsBase As Worksheet, ByVal tol As Double) As Collection
+    Dim out As New Collection
+    Set DiscrepValorODI = out
+    If wsBase Is Nothing Then Exit Function
+
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    Dim iP3 As Long : iP3 = ColIdx(mapa, "PEP3NIVEL")
+    Dim iP4 As Long : iP4 = ColIdx(mapa, "PEP4NIVEL")
+    Dim iCod As Long : iCod = ColIdx(mapa, "COD MAT")
+    Dim iDsc As Long : iDsc = ColIdx(mapa, "DESC MAT")
+    Dim iVal As Long : iVal = ColIdx(mapa, "VALOR")
+    Dim iQtd As Long : iQtd = ColIdx(mapa, "MAT LIB SAP")
+    Dim iTpp As Long : iTpp = ColIdx(mapa, "TIPO PEP")
+    If iP4 = 0 Or iCod = 0 Or iVal = 0 Or iQtd = 0 Then Exit Function
+
+    Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
+    Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, iP4).End(xlUp).Row
+    If lastR < 2 Then Exit Function
+    Dim d As Variant : d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+    Dim n As Long : n = UBound(d, 1)
+
+    ' 1a passada: PU de cada linha ODI valida e soma/contagem por codigo
+    Dim puL() As Double, okL() As Boolean, codL() As String
+    ReDim puL(1 To n) : ReDim okL(1 To n) : ReDim codL(1 To n)
+    Dim soma As Object : Set soma = CreateObject("Scripting.Dictionary")
+    Dim qtdC As Object : Set qtdC = CreateObject("Scripting.Dictionary")
+    Dim i As Long, p4 As String, tpp As String, cod As String, q As Double
+    For i = 1 To n
+        p4 = "" : tpp = "" : cod = ""
+        If Not IsError(d(i, iP4)) Then p4 = Trim(CStr(d(i, iP4)))
+        If iTpp > 0 Then
+            If Not IsError(d(i, iTpp)) Then tpp = CStr(d(i, iTpp))
+        End If
+        If Not IsError(d(i, iCod)) Then cod = NormCod(d(i, iCod))
+        q = Val0(d(i, iQtd))
+        If p4 <> "" And cod <> "" And q <> 0 Then
+            If ClassificarOD(p4, tpp) = "ODI" Then
+                puL(i) = Val0(d(i, iVal)) / q : okL(i) = True : codL(i) = cod
+                If soma.Exists(cod) Then
+                    soma(cod) = soma(cod) + puL(i) : qtdC(cod) = qtdC(cod) + 1
+                Else
+                    soma.Add cod, puL(i) : qtdC.Add cod, 1
+                End If
+            End If
+        End If
+    Next i
+
+    ' 2a passada: compara cada linha com a media do codigo
+    Dim itens() As Variant, dv() As Double, k As Long
+    ReDim itens(1 To n) : ReDim dv(1 To n)
+    Dim media As Double, nC As Long, sP3 As String, sDsc As String
+    For i = 1 To n
+        If okL(i) Then
+            nC = qtdC(codL(i))
+            media = soma(codL(i)) / nC
+            If nC >= 2 And EhDiscrepValor(puL(i), media, tol) Then
+                k = k + 1
+                dv(k) = DesvioMedia(puL(i), media)
+                ' sem IIf: ele avalia os dois ramos e leria a coluna 0 quando a coluna nao existe
+                sP3 = "" : sDsc = ""
+                If iP3 > 0 Then If Not IsError(d(i, iP3)) Then sP3 = Trim(CStr(d(i, iP3)))
+                If iDsc > 0 Then If Not IsError(d(i, iDsc)) Then sDsc = Trim(CStr(d(i, iDsc)))
+                itens(k) = Array(sP3, Trim(CStr(d(i, iP4))), codL(i), sDsc, Val0(d(i, iQtd)), _
+                                 Val0(d(i, iVal)), puL(i), media, dv(k), nC)
+            End If
+        End If
+    Next i
+
+    ' ordena pela maior diferenca (em modulo), selection sort
+    Dim a As Long, b As Long, m As Long, tV As Variant, tD As Double
+    For a = 1 To k - 1
+        m = a
+        For b = a + 1 To k
+            If Abs(dv(b)) > Abs(dv(m)) Then m = b
+        Next b
+        If m <> a Then
+            tV = itens(a) : itens(a) = itens(m) : itens(m) = tV
+            tD = dv(a) : dv(a) = dv(m) : dv(m) = tD
+        End If
+    Next a
+    For a = 1 To k
+        out.Add itens(a)
+    Next a
+End Function
+
+' Secao "DISCREPANCIA DE VALOR DE MATERIAL (ODI)" do RANKING DE RISCO, a partir
+' da linha r0: titulo, cabecalho e uma linha por item (acima da media em
+' vermelho, abaixo em ambar).
+Private Sub SecaoDiscrepValor(ws As Worksheet, ByVal r0 As Long, itens As Collection, _
+                              ByVal tol As Double)
+    Dim n As Long : n = itens.Count
+    With ws.Range(ws.Cells(r0, 1), ws.Cells(r0, 11))
+        .Merge
+        .Value = "DISCREPANCIA DE VALOR DE MATERIAL (ODI)  -  PU fora de +/-" & Format(tol, "0%") & _
+                 " da media do codigo   -   " & n & " item(ns)"
+        .Font.Name = "Segoe UI Semibold" : .Font.Size = 12 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = RGB(190, 24, 93)
+        .HorizontalAlignment = xlLeft : .VerticalAlignment = xlCenter : .IndentLevel = 1
+    End With
+    ws.Rows(r0).RowHeight = 24
+
+    Dim h As Variant
+    h = Array("PEP3NIVEL", "PEP4NIVEL", "COD MAT", "DESC MAT", "QTD", "VALOR", "PU (VALOR/QTD)", _
+              "MEDIA PU DO COD", "DESVIO", "SITUACAO", "OBSERVACAO")
+    Dim c As Long
+    For c = 1 To 11
+        With ws.Cells(r0 + 1, c)
+            .Value = h(c - 1)
+            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
+            .Font.Color = RGB(235, 240, 248) : .Interior.Color = RGB(31, 41, 59)
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
+        End With
+    Next c
+    ws.Rows(r0 + 1).RowHeight = 26
+
+    If n = 0 Then
+        With ws.Cells(r0 + 2, 1)
+            .Value = "Nenhum material de ODI com valor fora de +/-" & Format(tol, "0%") & " da media do codigo."
+            .Font.Italic = True : .Font.Color = RGB(0, 128, 0)
+        End With
+        Exit Sub
+    End If
+
+    Dim outD() As Variant : ReDim outD(1 To n, 1 To 11)
+    Dim i As Long, it As Variant, acima As Boolean
+    For i = 1 To n
+        it = itens(i)
+        acima = (CDbl(it(8)) > 0)
+        outD(i, 1) = it(0) : outD(i, 2) = it(1) : outD(i, 3) = it(2) : outD(i, 4) = it(3)
+        outD(i, 5) = it(4) : outD(i, 6) = it(5) : outD(i, 7) = it(6) : outD(i, 8) = it(7)
+        outD(i, 9) = it(8)
+        outD(i, 10) = IIf(acima, "ACIMA DA MEDIA", "ABAIXO DA MEDIA")
+        outD(i, 11) = "Discrepancia de valor de material: PU R$ " & Format(it(6), "#,##0.00") & _
+                      " esta " & Format(Abs(CDbl(it(8))), "0.0%") & IIf(acima, " acima", " abaixo") & _
+                      " da media do codigo (R$ " & Format(it(7), "#,##0.00") & " em " & it(9) & _
+                      " lancamentos ODI)"
+    Next i
+    Dim rI As Long : rI = r0 + 2
+    Dim rF As Long : rF = r0 + 1 + n
+    ws.Range(ws.Cells(rI, 3), ws.Cells(rF, 3)).NumberFormat = "@"
+    ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11)).Value = outD
+    ws.Range(ws.Cells(rI, 5), ws.Cells(rF, 8)).NumberFormat = "#,##0.00"
+    ws.Range(ws.Cells(rI, 9), ws.Cells(rF, 9)).NumberFormat = "+0.0%;-0.0%"
+    ws.Range(ws.Cells(rI, 9), ws.Cells(rF, 10)).HorizontalAlignment = xlCenter
+    With ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11))
+        .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Color = RGB(45, 52, 64)
+        .VerticalAlignment = xlCenter
+    End With
+    ' cor por linha: poucas dezenas de itens em geral
+    For i = 1 To n
+        If CStr(outD(i, 10)) = "ACIMA DA MEDIA" Then
+            ws.Range(ws.Cells(rI + i - 1, 1), ws.Cells(rI + i - 1, 11)).Interior.Color = RGB(252, 226, 228)
+            ws.Cells(rI + i - 1, 10).Font.Color = RGB(192, 0, 0)
+        Else
+            ws.Range(ws.Cells(rI + i - 1, 1), ws.Cells(rI + i - 1, 11)).Interior.Color = RGB(255, 244, 214)
+            ws.Cells(rI + i - 1, 10).Font.Color = RGB(176, 124, 0)
+        End If
+        ws.Cells(rI + i - 1, 10).Font.Bold = True
+    Next i
 End Sub
 
 ' Ultima linha do bloco CONTIGUO de dados na coluna, a partir de linhaIni.
@@ -4238,6 +4446,7 @@ Private Function CfgPadrao() As Collection
     c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
     c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
     c.Add Array("PRECOS_MAX_DIAS", 90, "Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO")
+    c.Add Array("DISCREP_VALOR_PCT", 0.3, "Discrepancia de valor de material (ODI): PU fora de +/- esta fracao da media do codigo")
     Set CfgPadrao = c
 End Function
 
@@ -6288,6 +6497,15 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "EhUnidadeInteira UN = True", (EhUnidadeInteira("UN") = True)
     RegTest nomes, oks, det, cnt, "NT006 133100007 e ancora", (GetMat(mp, "133100007").EhAncora = True)
     RegTest nomes, oks, det, cnt, "NT006 123140003 RazaoMin = 2", (GetMat(mp, "123140003").RazaoMin = 2)
+    ' Discrepancia de valor de material (ODI): +/-30% da media do codigo
+    RegTest nomes, oks, det, cnt, "DesvioMedia PU 130 x media 100 = +30%", (Abs(DesvioMedia(130, 100) - 0.3) < 0.000001)
+    RegTest nomes, oks, det, cnt, "DesvioMedia PU 70 x media 100 = -30%", (Abs(DesvioMedia(70, 100) + 0.3) < 0.000001)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 131 x media 100 = discrepante", (EhDiscrepValor(131, 100, 0.3) = True)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 69 x media 100 = discrepante", (EhDiscrepValor(69, 100, 0.3) = True)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 130 (limite) = ok", (EhDiscrepValor(130, 100, 0.3) = False)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 70 (limite) = ok", (EhDiscrepValor(70, 100, 0.3) = False)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 115 = ok", (EhDiscrepValor(115, 100, 0.3) = False)
+    RegTest nomes, oks, det, cnt, "EhDiscrepValor media zero = sem comparacao", (EhDiscrepValor(50, 0, 0.3) = False)
 
     Dim ws As Worksheet
     On Error Resume Next
