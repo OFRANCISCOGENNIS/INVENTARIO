@@ -19,12 +19,45 @@ Private mCaboMax As Double   ' cabo isolado isento de UC abaixo deste compriment
 Private mDifCondNu As Double ' COND NU: dif ABSOLUTA tolerada (CONFIG DIF_ABS_COND_NU)
 Private mDifAbsCabo As Double ' familias DIF_ABS_FAMILIAS: dif ABSOLUTA tolerada
 Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
+Private mOddValMin As Variant ' CONFIG ODD_VALOR_MIN (Empty = padrao -100)
+
+' Materiais equivalentes (aba EQUIVALENCIAS): COD normalizado -> GRUPO, e
+' GRUPO -> lista legivel dos codigos ("105300003 = 105300005").
+Private mEquiv As Object
+Private mEquivLista As Object
 
 ' Buffer de escrita da aba ALERTA CRITICO (perf: as ~10 escritas de celula por
 ' alerta viram 1 unica atribuicao de Range no final). Transposto (col, linha)
 ' porque ReDim Preserve so cresce a ULTIMA dimensao.
 Private mAlBuf() As Variant
 Private mAlCap As Long
+
+' Aba oculta com um registro de KPIs por execucao (base do "vs. execucao
+' anterior" nos cards do PAINEL DO GESTOR). Nao entra na lista de abas
+' recriadas a cada rodada, senao o historico se perderia.
+Private Const ABA_KPI As String = "HISTORICO KPI"
+
+' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
+' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
+' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
+Private Const EQUIV_VERSAO_ATUAL As Long = 4
+
+' Modo lote de CarregarBases (uma analise por base): GerarInventario nao abre
+' MsgBox (o texto fica em mAvisoLote para o resumo) e nao grava HISTORICO nem
+' HISTORICO KPI - compararia uma base com outra. mUltimoOk: a ultima execucao
+' de GerarInventario chegou ao fim.
+Private mModoLote As Boolean
+Private mAvisoLote As String
+Private mUltimoOk As Boolean
+
+' Saude da execucao (bloco no PAINEL): uma linha por etapa e os avisos nao
+' fatais. Fonte de precos: qual elo da cadeia (aba interna / arquivo externo)
+' foi usado nesta execucao - antes uma troca de fonte passava despercebida.
+Private mEtapas As Collection       ' Array(etapa, ok, segundos, detalhe)
+Private mAvisosExec As String       ' avisos nao fatais (vbCrLf & "  - " & ...)
+Private mFontePrecos As String      ' faixa MIN/MAX (PRECO UNITARIO e referencias)
+Private mFontePrecosData As Variant ' data do arquivo externo; Empty = sem data
+Private mFontePrecosRef As String   ' preco de referencia do UC SUBVALORIZADO
 
 ' Resultado da avaliacao de uma linha SAP x PRJ. Fonte UNICA da regra de
 ' aderencia: alimenta tanto o calculo do veredito (loop 1) quanto a
@@ -36,6 +69,8 @@ Private Type tAvalLinha
     CaboIsento   As Boolean  ' CABO ISOLADO < CABO_ISOLADO_MAX_M (isento)
     ReprovaLinha As Boolean  ' esta linha reprova o PEP4/PEP3
     RecalculaSit As Boolean  ' SIT MAT recalculada (cabo/condutor/ramal numerico)
+    ViolaOD      As Boolean  ' viola premissa de sinal/OD (sinal por OD; valor da ODD; SAP x PRJ opostos)
+    MotivoOD     As String   ' descricao da(s) violacao(oes) ("" quando ok)
 End Type
 
 ' Estrutura de dados para NT.006
@@ -234,6 +269,7 @@ End Function
 Public Sub GerarInventario()
 
     Set mFaixaCache = Nothing   ' limpa cache de precos para recarregar a base atual
+    mUltimoOk = False : mAvisoLote = ""
 
     Dim wb      As Workbook
     Dim wsBase  As Worksheet
@@ -245,8 +281,8 @@ Public Sub GerarInventario()
     Set wsBase = AcharBaseInventario(wb)
 
     If wsBase Is Nothing Then
-        MsgBox "Nenhuma aba com as colunas 'MAT LIB SAP' e 'MAT PRJ CAD' foi encontrada.", _
-               vbExclamation, "Analise Inventario"
+        Aviso "Nenhuma aba com as colunas 'MAT LIB SAP' (ou 'ATENDIDO SAP') e " & _
+              "'MAT PRJ CAD' (ou 'TOMBADO PROJ') foi encontrada.", vbExclamation
         Exit Sub
     End If
 
@@ -257,14 +293,15 @@ Public Sub GerarInventario()
 
     LogInit
     Call GarantirConfig(wb)
+    Call GarantirEquivalencias(wb)
     Dim faltam As String : faltam = ValidarBase(wsBase)
     If faltam <> "" Then
         Application.ScreenUpdating = True
         Application.Calculation = xlCalculationAutomatic
         Application.EnableEvents = True
-        MsgBox "A base '" & wsBase.Name & "' esta sem colunas obrigatorias:" & vbCrLf & vbCrLf & _
-               "  " & faltam & vbCrLf & vbCrLf & _
-               "Ajuste os cabecalhos da linha 1 e rode novamente.", vbCritical, "Analise Inventario"
+        Aviso "A base '" & wsBase.Name & "' esta sem colunas obrigatorias:" & vbCrLf & vbCrLf & _
+              "  " & faltam & vbCrLf & vbCrLf & _
+              "Ajuste os cabecalhos da linha 1 e rode novamente.", vbCritical
         Exit Sub
     End If
     LogAdd "CONFIG carregada e base validada: " & wsBase.Name
@@ -336,12 +373,18 @@ Public Sub GerarInventario()
     FimEtapa Err.Number, Err.Description, mStep, tt : On Error GoTo ErrHandler
 
     mStep = "HISTORICO" : tt = Timer : On Error Resume Next : Err.Clear
-    Call AtualizarHistorico(wb)
+    If Not mModoLote Then Call AtualizarHistorico(wb)    ' lote: bases diferentes
     FimEtapa Err.Number, Err.Description, mStep, tt : On Error GoTo ErrHandler
 
     mStep = "NOMES DEFINIDOS" : tt = Timer : On Error Resume Next : Err.Clear
     Call CriarNomesDefinidos(wb)
     FimEtapa Err.Number, Err.Description, mStep, tt : On Error GoTo ErrHandler
+
+    ' Saude da execucao no PAINEL, depois de TODAS as etapas (vai junto no
+    ' arquivo exportado pelo modo lote)
+    On Error Resume Next
+    If Not wsGestor Is Nothing Then EscreverSaudeExecucao wsGestor, wsBase
+    On Error GoTo ErrHandler
 
     LogAdd "Fim da geracao"
     Call GravarLog(wb)
@@ -355,6 +398,7 @@ Public Sub GerarInventario()
     wsGestor.Range("A1").Select
     On Error GoTo 0
 
+    mUltimoOk = True
     Dim msgFim As String
     msgFim = "Abas geradas:" & vbCrLf & _
            "  - PAINEL DO GESTOR (resumo executivo)" & vbCrLf & _
@@ -368,11 +412,10 @@ Public Sub GerarInventario()
            "  - CONFIG / HISTORICO (parametros e evolucao)" & vbCrLf & vbCrLf & _
            "Base: " & wsBase.Name
     If mFalhas <> "" Then
-        MsgBox msgFim & vbCrLf & vbCrLf & _
-               "ATENCAO - etapas com falha (as demais foram geradas):" & mFalhas, _
-               vbExclamation, "Analise Inventario"
+        Aviso msgFim & vbCrLf & vbCrLf & _
+              "ATENCAO - etapas com falha (as demais foram geradas):" & mFalhas, vbExclamation
     Else
-        MsgBox msgFim, vbInformation, "Analise Inventario"
+        Aviso msgFim, vbInformation
     End If
     Exit Sub
 
@@ -381,8 +424,18 @@ ErrHandler:
     Application.Calculation = xlCalculationAutomatic
     Application.EnableEvents = True
     Application.DisplayAlerts = True
-    MsgBox "Erro " & Err.Number & " na etapa [" & mStep & "]:" & vbCrLf & _
-           Err.Description, vbCritical, "Analise Inventario"
+    Aviso "Erro " & Err.Number & " na etapa [" & mStep & "]:" & vbCrLf & _
+          Err.Description, vbCritical
+End Sub
+
+' Mensagem de GerarInventario. No modo lote (CarregarBases, uma analise por
+' base) nao interrompe: guarda o texto para o resumo final.
+Private Sub Aviso(ByVal msg As String, ByVal estilo As VbMsgBoxStyle)
+    If mModoLote Then
+        mAvisoLote = msg
+    Else
+        MsgBox msg, estilo, "Analise Inventario"
+    End If
 End Sub
 
 
@@ -405,14 +458,14 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
     lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
 
     Dim srcIdx(1 To 16) As Long
-    Dim oc As Long, c As Long, hb As String, ho As String
+    Dim oc As Long, c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
     For oc = 1 To nCols
-        ho = NormStr(CStr(outHdr(oc - 1)))
-        For c = 1 To lastC
-            hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-            If hb = ho Then srcIdx(oc) = c : Exit For
-        Next c
+        srcIdx(oc) = ColIdx(mapa, NormStr(CStr(outHdr(oc - 1))))
     Next oc
+    ' TIPO PEP nao vai para a aba de saida, mas classifica o tipo de OD quando o
+    ' PEP4 nao tem sufixo (.I/.S/.D) - usado na premissa de sinal
+    Dim iTpPep As Long : iTpPep = ColIdx(mapa, "TIPO PEP")
 
     Dim refCol As Long : refCol = srcIdx(5)
     If refCol = 0 Then refCol = 1
@@ -437,6 +490,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
         Dim allP4 As Object : Set allP4 = CreateObject("Scripting.Dictionary")
         Dim p4pep3 As Object : Set p4pep3 = CreateObject("Scripting.Dictionary")
         Dim pep3RepFam As Object : Set pep3RepFam = CreateObject("Scripting.Dictionary")  ' PEP3 -> familias que reprovaram
+        Dim p3RepLinha As Object : Set p3RepLinha = CreateObject("Scripting.Dictionary")  ' PEP3 reprovado por regra de linha (qualquer item)
         Dim i As Long, pep4 As String, tipoR As String, sitR As String, pep3R As String
         Dim famR As String, famRaw As String, libV As Variant, prjV As Variant
 
@@ -459,6 +513,33 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             End If
         Next i
 
+        ' ---- Pre-passe: grupos de materiais EQUIVALENTES em cada PEP4 ----
+        ' Quando 2+ codigos do mesmo grupo (aba EQUIVALENCIAS) aparecem no mesmo
+        ' PEP4, houve troca de material: todos sao aderentes so se a quantidade
+        ' TOTAL do grupo e a mesma no SAP e no PRJ, cada linha com o proprio
+        ' codigo e descricao. Guarda os totais e os codigos do grupo (motivo).
+        Dim eqLib As Object : Set eqLib = CreateObject("Scripting.Dictionary")
+        Dim eqPrj As Object : Set eqPrj = CreateObject("Scripting.Dictionary")
+        Dim eqCods As Object : Set eqCods = CreateObject("Scripting.Dictionary")
+        Dim eqK As String, eqL As Double, eqP As Double, eqCod As String, eqDsc As String
+        For i = 1 To nRows
+            eqK = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            If eqK <> "" Then
+                eqL = 0 : eqP = 0
+                If srcIdx(9) > 0 Then eqL = Val0(baseData(i, srcIdx(9)))
+                If srcIdx(10) > 0 Then eqP = Val0(baseData(i, srcIdx(10)))
+                eqLib(eqK) = eqLib(eqK) + eqL
+                eqPrj(eqK) = eqPrj(eqK) + eqP
+                If Not eqCods.Exists(eqK) Then eqCods.Add eqK, CreateObject("Scripting.Dictionary")
+                eqCod = NormCod(baseData(i, srcIdx(5)))      ' ChaveEquiv ja descartou erro
+                eqDsc = ""
+                If srcIdx(7) > 0 Then
+                    If Not IsError(baseData(i, srcIdx(7))) Then eqDsc = Trim(CStr(baseData(i, srcIdx(7))))
+                End If
+                If Not eqCods(eqK).Exists(eqCod) Then eqCods(eqK).Add eqCod, eqDsc
+            End If
+        Next i
+
         For i = 1 To nRows
             pep4 = "" : tipoR = "" : sitR = "" : famR = "" : famRaw = "" : pep3R = ""
             If srcIdx(2) > 0 Then pep4 = NormStr(CStr(baseData(i, srcIdx(2))))
@@ -472,8 +553,42 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(10) > 0 Then prjV = baseData(i, srcIdx(10))
             ' Avaliacao unificada da linha (mesma funcao usada no loop de exibicao).
             ' UC zerado so reprova quando a obra (PEP3) esta TODA zerada.
+            ' tipo de OD pelo PEP4 CRU (o pep4 acima passou por NormStr, sem o ponto)
+            Dim p4Raw As String, tpPepR As String, valR As Variant
+            p4Raw = "" : tpPepR = "" : valR = 0
+            If srcIdx(2) > 0 Then p4Raw = CStr(baseData(i, srcIdx(2)))
+            If iTpPep > 0 Then tpPepR = CStr(baseData(i, iTpPep))
+            If srcIdx(6) > 0 Then valR = baseData(i, srcIdx(6))
+            ' troca por material EQUIVALENTE no PEP4: aderente so se a QUANTIDADE TOTAL
+            ' do grupo e a mesma no SAP e no PRJ (sem tolerancia)
+            Dim eqK1 As String : eqK1 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            Dim eqAt1 As Boolean : eqAt1 = False
+            If eqK1 <> "" Then eqAt1 = (eqCods(eqK1).Count >= 2)
+            Dim libAv As Variant, prjAv As Variant, sitAv As String
+            libAv = libV : prjAv = prjV : sitAv = sitR
+            If eqAt1 Then
+                libAv = eqLib(eqK1) : prjAv = eqPrj(eqK1) : sitAv = SitPorQuantidade(libAv, prjAv)
+            End If
             Dim av As tAvalLinha
-            av = AvaliarLinha(tipoR, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, pep3R))
+            av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
+                              ClassificarOD(p4Raw, tpPepR), valR, libV, prjV)
+            If eqAt1 Then AjustarAderEquiv av, libAv, prjAv
+            ' Regras de LINHA que reprovam o PEP3 inteiro, seja qual for o tipo do
+            ' item (o veredito normal so conta UC e COM critico: um COM comum assim
+            ' ficava NAO ADERENTE com a obra APROVADA):
+            '  - ODI com qualquer VALOR negativo
+            '  - MAT LIB SAP e MAT PRJ CAD da propria linha com sinais opostos
+            If pep3R <> "" Then
+                Dim fBase As String : fBase = IIf(famRaw <> "", famRaw, "(sem familia)")
+                If NegativoEmODI(ClassificarOD(p4Raw, tpPepR), valR) Then
+                    p3RepLinha(pep3R) = True
+                    RegistrarFamRep pep3RepFam, pep3R, fBase & " (valor negativo em ODI)"
+                End If
+                If SinaisOpostos(libV, prjV) <> "" Then
+                    p3RepLinha(pep3R) = True
+                    RegistrarFamRep pep3RepFam, pep3R, fBase & " (SAP x PRJ com sinais opostos)"
+                End If
+            End If
             If pep4 <> "" And Not allP4.Exists(pep4) Then allP4.Add pep4, True
             If pep4 <> "" And Not p4pep3.Exists(pep4) Then p4pep3.Add pep4, pep3R
             If pep4 <> "" And av.Avaliavel And Not av.CaboIsento Then
@@ -484,6 +599,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                     ' registra a familia culpada no PEP3 (sem duplicar)
                     Dim fLbl As String : fLbl = IIf(famRaw <> "", famRaw, "(sem familia)")
                     If av.UcZerado Then fLbl = fLbl & " (valores zerados)"
+                    If av.ViolaOD Then fLbl = fLbl & " (regra de OD)"
                     If Not pep3RepFam.Exists(pep3R) Then
                         pep3RepFam.Add pep3R, fLbl
                     ElseIf InStr(pep3RepFam(pep3R), fLbl) = 0 Then
@@ -511,6 +627,14 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If Not pep3Rep.Exists(p3) Then pep3Rep.Add p3, False
             If Not aprova(k4) Then pep3Rep(p3) = True
         Next k4
+        ' Regras de linha (ODI negativa; SAP x PRJ opostos): PEP3 reprovado mesmo
+        ' sem item UC/COM critico reprovado (e se nao tinha item avaliavel, deixa
+        ' de ser "SEM UC")
+        Dim kN As Variant
+        For Each kN In p3RepLinha.Keys
+            If Not pep3UC.Exists(kN) Then pep3UC.Add kN, True
+            pep3Rep(kN) = True
+        Next kN
 
         Dim kk As Variant
         For Each kk In pep3Rep.Keys
@@ -541,12 +665,32 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If srcIdx(11) > 0 Then tipoRow = NormStr(CStr(baseData(i, srcIdx(11))))
             Dim p3row As String : p3row = ""
             If srcIdx(1) > 0 Then p3row = NormStr(CStr(baseData(i, srcIdx(1))))
+            Dim p4RawRow As String, tpPepRow As String, valRow As Variant
+            p4RawRow = "" : tpPepRow = "" : valRow = 0
+            If srcIdx(2) > 0 Then p4RawRow = CStr(baseData(i, srcIdx(2)))
+            If iTpPep > 0 Then tpPepRow = CStr(baseData(i, iTpPep))
+            If srcIdx(6) > 0 Then valRow = baseData(i, srcIdx(6))
+            ' grupo EQUIVALENTE: a partir daqui libV/prjV/sitR sao do TOTAL do grupo
+            ' no PEP4 (avaliacao e motivo); as colunas de quantidade da linha ja
+            ' foram copiadas acima com os valores proprios do item
+            Dim libRow As Variant : libRow = libV
+            Dim prjRow As Variant : prjRow = prjV
+            Dim eqK2 As String : eqK2 = ChaveEquiv(baseData, i, srcIdx(2), srcIdx(5))
+            Dim eqAt2 As Boolean : eqAt2 = False
+            If eqK2 <> "" Then eqAt2 = (eqCods(eqK2).Count >= 2)
+            If eqAt2 Then
+                libV = eqLib(eqK2) : prjV = eqPrj(eqK2) : sitR = SitPorQuantidade(libV, prjV)
+            End If
             Dim avRow As tAvalLinha
-            avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row))
+            avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
+                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow, prjRow)
+            If eqAt2 Then AjustarAderEquiv avRow, libV, prjV
 
             Dim sitText As String
-            If avRow.UcZerado Then
+            If avRow.UcZerado Or avRow.ViolaOD Then
                 sitText = "NAO ADERENTE"
+            ElseIf eqAt2 Then
+                sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
             ElseIf avRow.RecalculaSit Then
                 sitText = IIf(avRow.EhAder, "ADERENTE", "NAO ADERENTE")
             Else
@@ -565,6 +709,8 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                 outArr(i, 14) = noIco & " REPROVADO"
                 If avRow.UcZerado Then
                     motivo = "Obra com TODOS os materiais UC zerados (MAT LIB SAP=0 e MAT PRJ CAD=0) - devolvida"
+                ElseIf avRow.ViolaOD Then
+                    motivo = "Este item nao aderente: " & avRow.MotivoOD
                 ElseIf tipoRow = "UC" And Not avRow.EhAder And sitR <> "NULO" Then
                     motivo = "Este item (UC) nao aderente: SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV) & FmtDif(libV, prjV)
                 ElseIf tipoRow = "COM" And EhComCritico(famR) And Not avRow.EhAder And sitR <> "NULO" Then
@@ -587,6 +733,16 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
                 Else
                     motivo = "Todos os itens avaliados do PEP3 aderentes"
                 End If
+            End If
+            ' item com sinal invertido em PEP3 nao reprovado (ex.: COM nao critico,
+            ' que nao entra no veredito): a linha e NAO ADERENTE e o motivo diz por que
+            If avRow.ViolaOD And Not p3Reprovado Then
+                motivo = motivo & " | Item NAO ADERENTE: " & avRow.MotivoOD
+            End If
+            If eqAt2 Then
+                motivo = motivo & " | Material equivalente: " & TextoEquiv(eqCods(eqK2)) & _
+                         " | total do grupo no PEP4 SAP=" & CStr(libV) & " / PRJ=" & CStr(prjV) & _
+                         IIf(avRow.EhAder, "", FmtDif(libV, prjV))
             End If
             outArr(i, 15) = motivo
             outArr(i, 16) = IIf(p3Reprovado, "Devolvido por divergencia de " & pep3RepFam(p3row), "")
@@ -1147,19 +1303,189 @@ End Function
 ' materiais UC do PEP3 estao zerados - o chamador informa via este flag
 ' (ver TodosUCZerados). Itens zerados isolados sao ignorados e o PEP3
 ' fica APROVADO quando as demais regras passam.
+' Tipo de OD do PEP: sufixo do PEP4 (.I/.M/.S/.D) ou, sem sufixo, a coluna
+' TIPO PEP (I/M/S/D ou ODI/ODM/ODS/ODD). Recebe o PEP4 CRU: NormStr remove o
+' ponto e apagaria o sufixo. Retorna "ODI", "ODM", "ODS", "ODD" ou "".
+Private Function ClassificarOD(ByVal pep4Raw As String, ByVal tipoPepRaw As String) As String
+    Select Case UCase(Right(Trim(pep4Raw), 2))
+        Case ".I": ClassificarOD = "ODI"
+        Case ".M": ClassificarOD = "ODM"
+        Case ".S": ClassificarOD = "ODS"
+        Case ".D": ClassificarOD = "ODD"
+        Case Else
+            Select Case UCase(Trim(tipoPepRaw))
+                Case "I", "ODI": ClassificarOD = "ODI"
+                Case "M", "ODM": ClassificarOD = "ODM"
+                Case "S", "ODS": ClassificarOD = "ODS"
+                Case "D", "ODD": ClassificarOD = "ODD"
+            End Select
+    End Select
+End Function
+
+' Premissa de sinal por tipo de OD, sobre VALOR e QUANTIDADE (MAT LIB SAP):
+'   ODD (desmonte)         -> ambos NEGATIVOS; positivo = NAO ADERENTE
+'   ODI / ODS (instalacao) -> ambos POSITIVOS; negativo = NAO ADERENTE
+' Zero nao viola (nao e positivo nem negativo). ODM fica fora da premissa.
+' Devolve a descricao da violacao, ou "" quando o sinal esta correto.
+Private Function SinalInvalidoOD(ByVal tipoOD As String, ByVal qtdV As Variant, _
+                                 ByVal valV As Variant) As String
+    Dim q As Double : q = Val0(qtdV)
+    Dim v As Double : v = Val0(valV)
+    Dim errado As String, esperado As String
+    Select Case tipoOD
+        Case "ODD"
+            esperado = "negativo"
+            If q > 0 And v > 0 Then
+                errado = "valor e quantidade POSITIVOS"
+            ElseIf q > 0 Then
+                errado = "quantidade POSITIVA"
+            ElseIf v > 0 Then
+                errado = "valor POSITIVO"
+            End If
+        Case "ODI", "ODS"
+            esperado = "positivo"
+            If q < 0 And v < 0 Then
+                errado = "valor e quantidade NEGATIVOS"
+            ElseIf q < 0 Then
+                errado = "quantidade NEGATIVA"
+            ElseIf v < 0 Then
+                errado = "valor NEGATIVO"
+            End If
+    End Select
+    If errado <> "" Then
+        SinalInvalidoOD = "PEP " & tipoOD & " com " & errado & " (esperado " & esperado & ")"
+    End If
+End Function
+
+' Alerta PU BAIXO EM ODI: material em PEP ODI com preco unitario (VALOR / QTD)
+' dentro de [puMin, puMax], limites inclusive. Condutores e cabos (familia
+' COND* / CABO*) ficam de fora: o PU deles e por metro e naturalmente baixo.
+' QTD zero nao tem preco unitario e nao alerta.
+Private Function PuBaixoODI(ByVal odTp As String, ByVal famN As String, _
+        ByVal valor As Double, ByVal qtd As Double, _
+        ByVal puMin As Double, ByVal puMax As Double) As Boolean
+    If odTp <> "ODI" Or qtd = 0 Then Exit Function
+    If Left(famN, 4) = "COND" Or Left(famN, 4) = "CABO" Then Exit Function
+    Dim pu As Double : pu = valor / qtd
+    ' folga de 1e-6: 0,01 calculado em ponto flutuante pode sair 0,00999999...
+    PuBaixoODI = (pu >= puMin - 0.000001 And pu <= puMax + 0.000001)
+End Function
+
+' Alerta PU 0,01 EM CABO/COND: cabo ou condutor (familia CABO* / COND*) com
+' preco unitario (VALOR / QTD) igual ao valor simbolico puAlvo (R$ 0,01) -
+' vale "o que aparece como 0,01": a menos de meio centavo dele (0,0051 a 0,0149).
+' Qualquer tipo de PEP. QTD zero nao tem preco unitario e nao alerta.
+Private Function PuSimbolicoCabo(ByVal famN As String, ByVal valor As Double, _
+        ByVal qtd As Double, ByVal puAlvo As Double) As Boolean
+    If qtd = 0 Then Exit Function
+    If Left(famN, 4) <> "COND" And Left(famN, 4) <> "CABO" Then Exit Function
+    PuSimbolicoCabo = (Abs(valor / qtd - puAlvo) < 0.005)
+End Function
+
+' Premissa de valor em ODD: material com VALOR abaixo do limite (padrao
+' R$ -100) e NAO ADERENTE. "Abaixo" = mais negativo: -150 viola, -100 nao.
+' Devolve a descricao da violacao, ou "" quando ok.
+Private Function ValorBaixoODD(ByVal tipoOD As String, ByVal valV As Variant, _
+                               ByVal limite As Double) As String
+    If tipoOD <> "ODD" Then Exit Function
+    Dim v As Double : v = Val0(valV)
+    If v < limite Then
+        ValorBaixoODD = "PEP ODD com valor R$ " & Format(v, "#,##0.00") & _
+                        " abaixo do limite de R$ " & Format(limite, "#,##0.00")
+    End If
+End Function
+
+' Limite de ODD_VALOR_MIN (CONFIG); -100 quando a CONFIG nao foi carregada.
+Private Function LimiteValorODD() As Double
+    If IsEmpty(mOddValMin) Then LimiteValorODD = -100 Else LimiteValorODD = mOddValMin
+End Function
+
+' Alerta POSTE ODI PU BAIXO: poste (familia contendo POSTE) em PEP ODI com
+' preco unitario (VALOR / QTD) de 0 ate abaixo do limite (padrao R$ 500).
+' PU negativo fica de fora (ja e alerta de sinal); QTD zero nao alerta.
+Private Function PosteBaratoODI(ByVal odTp As String, ByVal famN As String, _
+        ByVal valor As Double, ByVal qtd As Double, ByVal limite As Double) As Boolean
+    If odTp <> "ODI" Or qtd = 0 Then Exit Function
+    If InStr(famN, "POSTE") = 0 Then Exit Function
+    Dim pu As Double : pu = valor / qtd
+    PosteBaratoODI = (pu >= 0 And pu < limite)
+End Function
+
+' Alerta MEDIDOR EM PEP ODI: medidor (descricao ou familia com MEDIDOR) em PEP
+' ODI. Mesmo criterio de medidor da regra de ODM (sem CAIXA, para nao pegar
+' "CAIXA PARA MEDIDOR"), e tambem sem LACRE ("LACRE P/ MEDIDOR" nao e medidor).
+Private Function MedidorEmODI(ByVal odTp As String, ByVal descNorm As String, _
+                              ByVal famN As String) As Boolean
+    If odTp <> "ODI" Then Exit Function
+    Dim dN As String : dN = descNorm & " " & famN
+    MedidorEmODI = (InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 _
+                    And InStr(dN, "LACRE") = 0)
+End Function
+
+' PEP3 NAO ADERENTE por valor negativo em ODI: linha de PEP ODI com VALOR
+' negativo (qualquer tipo de item). Zero nao conta.
+Private Function NegativoEmODI(ByVal odTp As String, ByVal valV As Variant) As Boolean
+    NegativoEmODI = (odTp = "ODI" And Val0(valV) < 0)
+End Function
+
+' SAP e PRJ com sinais opostos na mesma linha (SAP +3 / PRJ -3, ou SAP -3 /
+' PRJ +3): incoerente em qualquer tipo de OD. Zero nao e positivo nem
+' negativo. Devolve a descricao, ou "" quando ok.
+Private Function SinaisOpostos(ByVal libV As Variant, ByVal prjV As Variant) As String
+    Dim l As Double : l = Val0(libV)
+    Dim p As Double : p = Val0(prjV)
+    If (l > 0 And p < 0) Or (l < 0 And p > 0) Then
+        SinaisOpostos = "MAT LIB SAP (" & CStr(l) & ") e MAT PRJ CAD (" & CStr(p) & _
+                        ") com sinais opostos"
+    End If
+End Function
+
+' Acrescenta a familia culpada a lista de devolucao do PEP3 (sem repetir).
+Private Sub RegistrarFamRep(d As Object, ByVal p3 As String, ByVal lbl As String)
+    If Not d.Exists(p3) Then
+        d.Add p3, lbl
+    ElseIf InStr(d(p3), lbl) = 0 Then
+        d(p3) = d(p3) & ", " & lbl
+    End If
+End Sub
+
 Private Function AvaliarLinha(tipoR As String, famR As String, _
                               libV As Variant, prjV As Variant, _
                               sitRNorm As String, _
-                              Optional ucZeradoReprova As Boolean = True) As tAvalLinha
+                              Optional ucZeradoReprova As Boolean = True, _
+                              Optional ByVal tipoOD As String = "", _
+                              Optional ByVal valV As Variant = 0, _
+                              Optional ByVal qtdSinal As Variant, _
+                              Optional ByVal prjSinal As Variant) As tAvalLinha
     Dim av As tAvalLinha
     av.UcZerado = MaterialUCZerado(tipoR, libV, prjV) And ucZeradoReprova
     av.EhAder = EhAderente(famR, libV, prjV, sitRNorm)
     If av.UcZerado Then av.EhAder = False   ' UC zerado nunca e aderente
+    ' Premissa de sinal por tipo de OD: valor/quantidade com sinal oposto ao
+    ' esperado torna o item NAO ADERENTE, independente da comparacao SAP x PRJ
+    ' qtdSinal: quantidade da propria linha quando libV e o TOTAL de um grupo
+    ' de equivalentes - o sinal vale por item, nao pelo total do grupo
+    Dim qS As Variant
+    If IsMissing(qtdSinal) Then qS = libV Else qS = qtdSinal
+    av.MotivoOD = SinalInvalidoOD(tipoOD, qS, valV)
+    ' ODD: valor abaixo do limite tambem torna o item NAO ADERENTE
+    Dim mVal As String : mVal = ValorBaixoODD(tipoOD, valV, LimiteValorODD())
+    If mVal <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mVal
+    ' SAP e PRJ com sinais opostos: confere as quantidades da PROPRIA linha
+    ' (prjSinal/qtdSinal), nao o total de um grupo de equivalentes
+    Dim pS As Variant
+    If IsMissing(prjSinal) Then pS = prjV Else pS = prjSinal
+    Dim mOp As String : mOp = SinaisOpostos(qS, pS)
+    If mOp <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mOp
+    av.ViolaOD = (av.MotivoOD <> "")
+    If av.ViolaOD Then av.EhAder = False
     av.CaboIsento = CaboComoCOM(famR, libV)
     ' UC sempre avalia; COM avalia apenas se for familia critica (COM_CRITICO)
     av.Avaliavel = (tipoR = "UC") Or (tipoR = "COM" And EhComCritico(famR))
-    ' reprova: nao aderente com situacao valida, OU material UC zerado
-    av.ReprovaLinha = (Not av.EhAder And sitRNorm <> "NULO") Or av.UcZerado
+    ' reprova: nao aderente com situacao valida, OU material UC zerado, OU sinal
+    ' invertido (fato do dado: nao depende do texto da SIT MAT, nem de "NULO")
+    av.ReprovaLinha = (Not av.EhAder And sitRNorm <> "NULO") Or av.UcZerado _
+                      Or av.ViolaOD
     ' SIT MAT recalculada p/ cabo/condutor/ramal com valores numericos
     av.RecalculaSit = (Left(famR, 4) = "COND" Or Left(famR, 4) = "CABO" Or famR = "RAMAL") _
                       And IsNumeric(libV) And IsNumeric(prjV)
@@ -1267,19 +1593,15 @@ Private Sub ProcessarCOMInventario(wsBase As Worksheet, wsCom As Worksheet)
     Dim colPEP3 As Long, colPEP4 As Long, colMat As Long
     Dim colDescM As Long, colQtd As Long, colUML As Long
     Dim colTipo As Long, colPEP3n As Long
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case h
-            Case "PEP3NIVEL":   colPEP3 = c
-            Case "PEP4NIVEL":   colPEP4 = c
-            Case "COD MAT":     colMat  = c
-            Case "DESC MAT":    colDescM = c
-            Case "MAT LIB SAP": colQtd  = c
-            Case "UND":         colUML  = c
-            Case "TIPO":        colTipo = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    colPEP3  = ColIdx(mapa, "PEP3NIVEL")
+    colPEP4  = ColIdx(mapa, "PEP4NIVEL")
+    colMat   = ColIdx(mapa, "COD MAT")
+    colDescM = ColIdx(mapa, "DESC MAT")
+    colQtd   = ColIdx(mapa, "MAT LIB SAP")
+    colUML   = ColIdx(mapa, "UND")
+    colTipo  = ColIdx(mapa, "TIPO")
     If colPEP4 = 0 Then colPEP4 = 2
     If colMat  = 0 Then colMat  = 5
     If colDescM= 0 Then colDescM= 7
@@ -1668,42 +1990,41 @@ End Sub
 
 Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
 
+    ' Cabecalho PRIMEIRO: se algo abaixo falhar, a aba ainda tem estrutura e o
+    ' anexo do diagnostico (AnexarAtencoesAlerta) tem onde se apoiar. Antes, uma
+    ' falha ao carregar precos abortava a etapa com a aba totalmente vazia.
+    EscreverCabecalhoAlerta ws, 1
+
+    ' Precos de referencia so alimentam o alerta UC SUBVALORIZADO: se a base de
+    ' precos falhar, a etapa segue sem esse alerta em vez de abortar inteira.
+    mStep = "ALERTA CRITICO (precos de referencia)"
     Dim precos As Object
+    On Error Resume Next
     Set precos = CarregarPrecos(wsBase.Parent)
+    If Err.Number <> 0 Then
+        AvisoExec "ALERTA CRITICO: precos de referencia indisponiveis, alerta UC " & _
+                  "SUBVALORIZADO desativado nesta execucao - " & Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
+    If precos Is Nothing Then Set precos = CreateObject("Scripting.Dictionary")
+    mStep = "ALERTA CRITICO (leitura da base)"
 
     Dim lastC As Long
     lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim idxPep3 As Long, idxPep4 As Long, idxCod As Long, idxDesc As Long
     Dim idxFam As Long, idxTipo As Long, idxValor As Long, idxQtd As Long, idxTipoPep As Long
-    Dim c As Long, hb As String
-    For c = 1 To lastC
-        hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case hb
-            Case "PEP3NIVEL":   idxPep3 = c
-            Case "PEP4NIVEL":   idxPep4 = c
-            Case "COD MAT":     idxCod  = c
-            Case "DESC MAT":    idxDesc = c
-            Case "FAMILIA":     idxFam  = c
-            Case "TIPO":        idxTipo = c
-            Case "VALOR":       idxValor = c
-            Case "MAT LIB SAP": idxQtd  = c
-            Case "TIPO PEP":    idxTipoPep = c
-        End Select
-    Next c
-
-    Dim hdrs As Variant
-    hdrs = Array("TIPO ALERTA","PEP3NIVEL","PEP4NIVEL","COD MAT","DESC MAT","FAMILIA","VALOR","QTD","PRECO UNIT","REFERENCIA","MOTIVO")
-    For c = 1 To 11
-        With ws.Cells(1, c)
-            .Value = hdrs(c - 1)
-            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
-            .Font.Color = RGB(235, 240, 248)
-            .Interior.Color = RGB(17, 24, 39)        ' navy escuro
-            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
-            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
-        End With
-    Next c
-    ws.Rows(1).RowHeight = 30
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    idxPep3    = ColIdx(mapa, "PEP3NIVEL")
+    idxPep4    = ColIdx(mapa, "PEP4NIVEL")
+    idxCod     = ColIdx(mapa, "COD MAT")
+    idxDesc    = ColIdx(mapa, "DESC MAT")
+    idxFam     = ColIdx(mapa, "FAMILIA")
+    idxTipo    = ColIdx(mapa, "TIPO")
+    idxValor   = ColIdx(mapa, "VALOR")
+    idxQtd     = ColIdx(mapa, "MAT LIB SAP")
+    idxTipoPep = ColIdx(mapa, "TIPO PEP")
 
     ' outRow e declarado ANTES do early-exit abaixo: o GoTo Finaliza2 pula a
     ' secao de declaracoes seguinte, e Finaliza2 usa outRow para saber quantos
@@ -1717,6 +2038,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim d As Variant
     d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastRow, lastC)).Value
     Dim n As Long : n = lastRow - 1
+    mStep = "ALERTA CRITICO (regras por linha)"
 
     ' Saida bufferizada (perf): alertas acumulados em memoria via AlertaCel e
     ' escritos na planilha numa unica atribuicao em Finaliza2
@@ -1761,6 +2083,11 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
 
     Dim codMat As String, descMat As String, familia As String, famN As String
     Dim valor As Double, qtd As Double, unit As Double, refP As Double
+    Dim puOdiMin As Double : puOdiMin = CfgD("PU_ODI_MIN", 0.01)
+    Dim puOdiMax As Double : puOdiMax = CfgD("PU_ODI_MAX", 10)
+    Dim puCabo As Double : puCabo = CfgD("PU_CABO_ALERTA", 0.01)
+    Dim oddLim As Double : oddLim = LimiteValorODD()
+    Dim posteMin As Double : posteMin = CfgD("POSTE_ODI_PU_MIN", 500)
 
     Dim kk As Variant
     For Each kk In p4pep3b.Keys
@@ -1837,17 +2164,10 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             outRow = outRow + 1
         End If
 
-        ' Sinal do material x tipo de OD (sufixo do PEP4):
-        '  ODI/.I, ODM/.M, ODS/.S  -> esperado POSITIVO (instala/movimenta); negativo = alerta
-        '  ODD/.D                  -> esperado NEGATIVO (desmonte); positivo = alerta
-        Dim suf As String : suf = UCase(Right(pep4, 2))
-        Dim odTp As String : odTp = ""
-        Select Case suf
-            Case ".I": odTp = "ODI"
-            Case ".M": odTp = "ODM"
-            Case ".S": odTp = "ODS"
-            Case ".D": odTp = "ODD"
-        End Select
+        ' Tipo de OD: sufixo do PEP4 ou, sem sufixo, a coluna TIPO PEP
+        Dim tpPepRow As String : tpPepRow = ""
+        If idxTipoPep > 0 Then tpPepRow = CStr(d(i, idxTipoPep))
+        Dim odTp As String : odTp = ClassificarOD(pep4, tpPepRow)
 
         ' ODM: acumula medidores e lacres por PEP4 (regra 1 medidor = 2 lacres)
         If odTp = "ODM" Then
@@ -1859,7 +2179,22 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
                 If lacreP4.Exists(pep4) Then lacreP4(pep4) = lacreP4(pep4) + qtd Else lacreP4.Add pep4, qtd
             End If
         End If
-        If (odTp = "ODI" Or odTp = "ODM" Or odTp = "ODS") And qtd < 0 And codMat <> "" Then
+        ' Premissa de sinal (valor E quantidade) - a mesma de AvaliarLinha, que
+        ' marca estes itens como NAO ADERENTE na ANALISE SAP x PRJ
+        Dim motSinal As String : motSinal = SinalInvalidoOD(odTp, qtd, valor)
+        If motSinal <> "" And codMat <> "" Then
+            AlertaCel outRow, 1, IIf(odTp = "ODD", "MATERIAL POSITIVO EM ODD", "MATERIAL NEGATIVO")
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 11, motSinal & " - item NAO ADERENTE"
+            outRow = outRow + 1
+        ElseIf odTp = "ODM" And qtd < 0 And codMat <> "" Then
+            ' ODM fica fora da premissa de aderencia; segue apenas como alerta
             AlertaCel outRow, 1, "MATERIAL NEGATIVO"
             AlertaCel outRow, 2, pep3
             AlertaCel outRow, 3, pep4
@@ -1868,10 +2203,12 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 6, familia
             AlertaCel outRow, 7, valor
             AlertaCel outRow, 8, qtd
-            AlertaCel outRow, 11, "Material NEGATIVO em PEP " & odTp & " (esperado positivo)"
+            AlertaCel outRow, 11, "Material NEGATIVO em PEP ODM (esperado positivo)"
             outRow = outRow + 1
-        ElseIf odTp = "ODD" And qtd > 0 And codMat <> "" Then
-            AlertaCel outRow, 1, "MATERIAL POSITIVO EM ODD"
+        End If
+
+        If PuBaixoODI(odTp, famN, valor, qtd, puOdiMin, puOdiMax) And codMat <> "" Then
+            AlertaCel outRow, 1, "PU BAIXO EM ODI"
             AlertaCel outRow, 2, pep3
             AlertaCel outRow, 3, pep4
             AlertaCel outRow, 4, codMat
@@ -1879,7 +2216,74 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 6, familia
             AlertaCel outRow, 7, valor
             AlertaCel outRow, 8, qtd
-            AlertaCel outRow, 11, "Material POSITIVO em PEP ODD (esperado negativo / desmonte)"
+            AlertaCel outRow, 9, valor / qtd
+            AlertaCel outRow, 10, Format(puOdiMin, "#,##0.00") & " a " & Format(puOdiMax, "#,##0.00")
+            AlertaCel outRow, 11, "Preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
+                " em PEP ODI (faixa de alerta R$ " & Format(puOdiMin, "#,##0.00") & _
+                " a R$ " & Format(puOdiMax, "#,##0.00") & ")"
+            outRow = outRow + 1
+        End If
+
+        ' ODD com valor abaixo do limite - a mesma regra de AvaliarLinha, que marca
+        ' o item como NAO ADERENTE na ANALISE SAP x PRJ
+        Dim motOdd As String : motOdd = ValorBaixoODD(odTp, valor, oddLim)
+        If motOdd <> "" And codMat <> "" Then
+            AlertaCel outRow, 1, "ODD VALOR ABAIXO DO LIMITE"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 10, Format(oddLim, "#,##0.00")
+            AlertaCel outRow, 11, motOdd & " - item NAO ADERENTE"
+            outRow = outRow + 1
+        End If
+
+        ' medidor e material de ODM: lancado em ODI esta no tipo de obra errado
+        If MedidorEmODI(odTp, NormStr(descMat), famN) And codMat <> "" Then
+            AlertaCel outRow, 1, "MEDIDOR EM PEP ODI"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 11, "Medidor em PEP ODI (medidor e material de ODM)"
+            outRow = outRow + 1
+        End If
+
+        If PosteBaratoODI(odTp, famN, valor, qtd, posteMin) And codMat <> "" Then
+            AlertaCel outRow, 1, "POSTE ODI PU BAIXO"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 9, valor / qtd
+            AlertaCel outRow, 10, Format(posteMin, "#,##0.00")
+            AlertaCel outRow, 11, "Poste em PEP ODI com preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
+                " abaixo de R$ " & Format(posteMin, "#,##0.00")
+            outRow = outRow + 1
+        End If
+
+        If PuSimbolicoCabo(famN, valor, qtd, puCabo) And codMat <> "" Then
+            AlertaCel outRow, 1, "PU 0,01 EM CABO/COND"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 9, valor / qtd
+            AlertaCel outRow, 10, Format(puCabo, "#,##0.00")
+            AlertaCel outRow, 11, "Cabo/condutor com preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
+                " (valor simbolico) em PEP " & IIf(odTp <> "", odTp, pep4)
             outRow = outRow + 1
         End If
 
@@ -1998,6 +2402,7 @@ ProxLinha2:
     End If
 
 Finaliza2:
+    mStep = "ALERTA CRITICO (montagem da aba)"
     Dim totAl As Long : totAl = outRow - 2
 
     ' Despeja o buffer de alertas na planilha numa UNICA atribuicao de Range
@@ -2055,22 +2460,7 @@ Finaliza2:
                 iA = iA + 1
             Loop
             Dim bgA As Long, chip As Long
-            Select Case tA
-                Case "ODI SEM UC":                bgA = RGB(255, 244, 214) : chip = RGB(214, 158, 0)
-                Case "PEP SEM UC":                bgA = RGB(255, 238, 230) : chip = RGB(196, 89, 17)
-                Case "ODI SEM COM":               bgA = RGB(230, 240, 248) : chip = RGB(46, 117, 182)
-                Case "PU ABAIXO MIN":             bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
-                Case "PU ACIMA MAX":              bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "MATERIAL NEGATIVO":         bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "MATERIAL POSITIVO EM ODD":  bgA = RGB(252, 233, 219) : chip = RGB(214, 99, 0)
-                Case "LACRE x MEDIDOR":           bgA = RGB(225, 223, 245) : chip = RGB(96, 64, 196)
-                Case "POSTE EM PEP .M":           bgA = RGB(222, 236, 250) : chip = RGB(31, 107, 183)
-                Case "POSTE EM PEP .S":           bgA = RGB(220, 245, 240) : chip = RGB(15, 130, 115)
-                Case "UC SUBVALORIZADO":          bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
-                Case "UC - PRECO NAO ENCONTRADO": bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
-                Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
-                Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
-            End Select
+            CoresAlerta tA, bgA, chip
             ws.Range(ws.Cells(1 + iIni, 1), ws.Cells(1 + iA, 11)).Interior.Color = bgA
             ' "chip" colorido do tipo de alerta (col 1)
             With ws.Range(ws.Cells(1 + iIni, 1), ws.Cells(1 + iA, 1))
@@ -2082,8 +2472,180 @@ Finaliza2:
         Loop
     End If
 
-    ' --- Banda de titulo no topo (insere 2 linhas) ---
-    ws.Range("1:2").Insert Shift:=xlDown
+    ' --- Resumo por tipo: contagem e primeira linha de cada tipo ---
+    ' Os tipos se intercalam na lista (o loop principal emite varios tipos por
+    ' linha da base), entao a contagem vai por dicionario, e nao pelos blocos
+    ' contiguos usados na pintura acima.
+    Dim tpNome() As String, tpQtd() As Long, tpLin() As Long, nTp As Long
+    If totAl > 0 Then
+        Dim dCnt As Object : Set dCnt = CreateObject("Scripting.Dictionary")
+        Dim dFst As Object : Set dFst = CreateObject("Scripting.Dictionary")
+        Dim rS As Long, tS As String
+        For rS = 1 To totAl
+            tS = Trim(CStr(dA(rS, 1)))
+            If tS <> "" Then
+                If dCnt.Exists(tS) Then
+                    dCnt(tS) = dCnt(tS) + 1
+                Else
+                    dCnt.Add tS, 1
+                    dFst.Add tS, 1 + rS      ' linha na planilha ANTES da insercao do topo
+                End If
+            End If
+        Next rS
+        nTp = dCnt.Count
+        If nTp > 0 Then
+            ReDim tpNome(1 To nTp) : ReDim tpQtd(1 To nTp) : ReDim tpLin(1 To nTp)
+            Dim kS As Variant, ixS As Long : ixS = 0
+            For Each kS In dCnt.Keys
+                ixS = ixS + 1
+                tpNome(ixS) = CStr(kS) : tpQtd(ixS) = dCnt(kS) : tpLin(ixS) = dFst(kS)
+            Next kS
+            ' ordena por quantidade desc (selection sort: no maximo ~15 tipos)
+            Dim iSel As Long, jSel As Long, mSel As Long
+            For iSel = 1 To nTp - 1
+                mSel = iSel
+                For jSel = iSel + 1 To nTp
+                    If tpQtd(jSel) > tpQtd(mSel) Then mSel = jSel
+                Next jSel
+                If mSel <> iSel Then
+                    Dim swN As String, swQ As Long, swL As Long
+                    swN = tpNome(iSel) : tpNome(iSel) = tpNome(mSel) : tpNome(mSel) = swN
+                    swQ = tpQtd(iSel) : tpQtd(iSel) = tpQtd(mSel) : tpQtd(mSel) = swQ
+                    swL = tpLin(iSel) : tpLin(iSel) = tpLin(mSel) : tpLin(mSel) = swL
+                End If
+            Next iSel
+        End If
+    End If
+
+    ' --- Banda de titulo + resumo no topo ---
+    ' Linhas inseridas: 2 de titulo + N de chips + 1 de respiro. Como a altura
+    ' varia, quem le esta aba usa PrimeiraLinhaAlerta em vez de linha fixa.
+    Dim nLinSum As Long, nIns As Long
+    If nTp > 0 Then nLinSum = -Int(-nTp / 3)          ' teto da divisao por 3
+    If nTp > 0 Then nIns = 2 + nLinSum + 1 Else nIns = 2
+    ws.Range("1:" & nIns).Insert Shift:=xlDown
+
+    EscreverTituloAlerta ws
+
+    If nTp > 0 Then
+        Dim cIni As Variant : cIni = Array(1, 4, 7)
+        Dim cFim As Variant : cFim = Array(3, 6, 11)
+        Dim t As Long
+        For t = 1 To nTp
+            Dim rowCh As Long : rowCh = 3 + Int((t - 1) / 3)
+            Dim slot As Long : slot = (t - 1) Mod 3
+            Dim bgS As Long, chS As Long
+            CoresAlerta tpNome(t), bgS, chS
+            With ws.Range(ws.Cells(rowCh, cIni(slot)), ws.Cells(rowCh, cFim(slot)))
+                .Merge
+                .Value = tpNome(t) & "   " & ChrW(&H2022) & "   " & Format(tpQtd(t), "#,##0")
+                .Interior.Color = chS
+                .Font.Name = "Segoe UI Semibold" : .Font.Size = 10 : .Font.Bold = True
+                .Font.Color = RGB(255, 255, 255)
+                .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            End With
+            ' atalho para o primeiro apontamento do tipo (os blocos sao pintados
+            ' por tipo, entao cair na primeira linha ja mostra o grupo)
+            On Error Resume Next
+            ws.Hyperlinks.Add Anchor:=ws.Cells(rowCh, cIni(slot)), Address:="", _
+                SubAddress:="'" & ws.Name & "'!A" & (tpLin(t) + nIns), _
+                ScreenTip:="Ir para o primeiro: " & tpNome(t)
+            On Error GoTo 0
+            ' Hyperlinks.Add repinta a celula com o estilo de link
+            With ws.Cells(rowCh, cIni(slot)).Font
+                .Name = "Segoe UI Semibold" : .Size = 10 : .Bold = True
+                .Color = RGB(255, 255, 255) : .Underline = xlUnderlineStyleNone
+            End With
+            ws.Rows(rowCh).RowHeight = 20
+        Next t
+        ws.Rows(3 + nLinSum).RowHeight = 6      ' respiro antes do cabecalho
+    End If
+
+    Dim rHdr As Long : rHdr = nIns + 1
+    If totAl = 0 Then
+        ws.Cells(rHdr + 1, 1).Value = "Nenhum alerta critico encontrado nesta base."
+        ws.Cells(rHdr + 1, 1).Font.Italic = True
+        ws.Cells(rHdr + 1, 1).Font.Color = RGB(0, 128, 0)
+    Else
+        ws.Range(ws.Cells(rHdr, 1), ws.Cells(rHdr, 11)).AutoFilter
+    End If
+
+    On Error Resume Next
+    ws.Activate
+    ActiveWindow.DisplayGridlines = False
+    ws.Range("A" & (rHdr + 1)).Select
+    ActiveWindow.FreezePanes = True
+    On Error GoTo 0
+    ws.Range("A1").Select
+    mStep = "ALERTA CRITICO"     ' concluiu: o log registra a etapa pelo nome normal
+End Sub
+
+' Paleta por tipo de alerta: cor de fundo da linha e cor do "chip" da coluna 1.
+' Fonte unica, usada tanto na pintura das linhas quanto nos chips do resumo.
+Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As Long)
+    Select Case tipo
+        Case "ODI SEM UC":                bgA = RGB(255, 244, 214) : chip = RGB(214, 158, 0)
+        Case "PEP SEM UC":                bgA = RGB(255, 238, 230) : chip = RGB(196, 89, 17)
+        Case "ODI SEM COM":               bgA = RGB(230, 240, 248) : chip = RGB(46, 117, 182)
+        Case "PU ABAIXO MIN":             bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
+        Case "PU ACIMA MAX":              bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "MATERIAL NEGATIVO":         bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "MATERIAL POSITIVO EM ODD":  bgA = RGB(252, 233, 219) : chip = RGB(214, 99, 0)
+        Case "LACRE x MEDIDOR":           bgA = RGB(225, 223, 245) : chip = RGB(96, 64, 196)
+        Case "POSTE EM PEP .M":           bgA = RGB(222, 236, 250) : chip = RGB(31, 107, 183)
+        Case "POSTE EM PEP .S":           bgA = RGB(220, 245, 240) : chip = RGB(15, 130, 115)
+        Case "UC SUBVALORIZADO":          bgA = RGB(252, 226, 228) : chip = RGB(192, 0, 0)
+        Case "UC - PRECO NAO ENCONTRADO": bgA = RGB(255, 244, 214) : chip = RGB(176, 124, 0)
+        Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
+        Case "PU BAIXO EM ODI":           bgA = RGB(252, 231, 243) : chip = RGB(190, 24, 93)
+        Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
+        Case "ODD VALOR ABAIXO DO LIMITE": bgA = RGB(252, 226, 228) : chip = RGB(153, 27, 27)
+        Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
+        Case "MEDIDOR EM PEP ODI":        bgA = RGB(237, 233, 254) : chip = RGB(109, 40, 217)
+        Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
+    End Select
+End Sub
+
+' Primeira linha de DADOS da aba ALERTA CRITICO. O topo tem banda de titulo e,
+' quando ha apontamentos, um resumo por tipo de altura variavel - por isso a
+' linha do cabecalho nao pode ser fixa. Procura a linha cujo A = "TIPO ALERTA".
+Private Function PrimeiraLinhaAlerta(wsA As Worksheet) As Long
+    Dim r As Long : r = LinhaCabecalhoAlerta(wsA)
+    If r > 0 Then PrimeiraLinhaAlerta = r + 1 Else PrimeiraLinhaAlerta = 4
+End Function
+
+' Linha do cabecalho (A = "TIPO ALERTA") da aba ALERTA CRITICO; 0 se nao houver.
+Private Function LinhaCabecalhoAlerta(wsA As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 40
+        If NormStr(CStr(wsA.Cells(r, 1).Value)) = "TIPO ALERTA" Then
+            LinhaCabecalhoAlerta = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+' Cabecalho da tabela da aba ALERTA CRITICO, na linha indicada.
+Private Sub EscreverCabecalhoAlerta(ws As Worksheet, ByVal linha As Long)
+    Dim hdrs As Variant
+    hdrs = Array("TIPO ALERTA", "PEP3NIVEL", "PEP4NIVEL", "COD MAT", "DESC MAT", "FAMILIA", _
+                 "VALOR", "QTD", "PRECO UNIT", "REFERENCIA", "MOTIVO")
+    Dim c As Long
+    For c = 1 To 11
+        With ws.Cells(linha, c)
+            .Value = hdrs(c - 1)
+            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
+            .Font.Color = RGB(235, 240, 248)
+            .Interior.Color = RGB(17, 24, 39)        ' navy escuro
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
+        End With
+    Next c
+    ws.Rows(linha).RowHeight = 30
+End Sub
+
+' Banda de titulo (A1:K2) da aba ALERTA CRITICO.
+Private Sub EscreverTituloAlerta(ws As Worksheet)
     With ws.Range("A1:K2")
         .Merge
         .Value = ChrW(&H26A0) & "  PAINEL DE ALERTAS CRITICOS"
@@ -2092,26 +2654,17 @@ Finaliza2:
         .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
     End With
     ws.Rows(1).RowHeight = 22 : ws.Rows(2).RowHeight = 22
-
-    If totAl = 0 Then
-        ws.Cells(4, 1).Value = "Nenhum alerta critico encontrado nesta base."
-        ws.Cells(4, 1).Font.Italic = True : ws.Cells(4, 1).Font.Color = RGB(0, 128, 0)
-    Else
-        ws.Range(ws.Cells(3, 1), ws.Cells(3, 11)).AutoFilter
-    End If
-
-    On Error Resume Next
-    ws.Activate
-    ActiveWindow.DisplayGridlines = False
-    ws.Range("A4").Select
-    ActiveWindow.FreezePanes = True
-    On Error GoTo 0
-    ws.Range("A1").Select
 End Sub
 
 ' Escreve uma celula de alerta no buffer (substitui ws.Cells(outRow, c).Value =).
 ' Cresce o buffer sob demanda; outRow comeca em 2 (linha 1 = cabecalho).
 Private Sub AlertaCel(outRow As Long, c As Long, v As Variant)
+    ' buffer ainda nao alocado (chamada fora da ordem esperada): aloca em vez
+    ' de estourar no ReDim Preserve com mAlCap = 0, que faria laco infinito
+    If mAlCap < 1 Then
+        mAlCap = 256
+        ReDim mAlBuf(1 To 11, 1 To mAlCap)
+    End If
     Do While outRow - 1 > mAlCap
         mAlCap = mAlCap * 2
         ReDim Preserve mAlBuf(1 To 11, 1 To mAlCap)
@@ -2143,7 +2696,8 @@ Private Function CarregarPrecos(wb As Workbook) As Object
             Dim dPr As Variant : dPr = wsPrecos.Range(wsPrecos.Cells(2, 1), wsPrecos.Cells(lastRow, 2)).Value
             Dim r As Long
             For r = 1 To UBound(dPr, 1)
-                Dim cod As String : cod = NormCod(dPr(r, 1))
+                Dim cod As String : cod = ""
+                If Not IsError(dPr(r, 1)) Then cod = NormCod(dPr(r, 1))
                 Dim preco As Double : preco = Val0(dPr(r, 2))
                 If cod <> "" And preco > 0 Then
                     If Not precos.Exists(cod) Then precos.Add cod, preco
@@ -2152,6 +2706,7 @@ Private Function CarregarPrecos(wb As Workbook) As Object
         End If
     End If
 
+    If precos.Count > 0 Then mFontePrecosRef = "aba PRECOS (" & Format(precos.Count, "#,##0") & " materiais)"
     ' Fallback: se nao houver aba "PRECOS", deriva preco = ponto medio (MIN+MAX)/2
     ' da BASE DE PRECOS (aba interna ou arquivo externo).
     If precos.Count = 0 Then
@@ -2164,6 +2719,7 @@ Private Function CarregarPrecos(wb As Workbook) As Object
             md = (mn + mx) / 2
             If md > 0 Then precos.Add CStr(k), md
         Next k
+        mFontePrecosRef = "ponto medio MIN/MAX da faixa de precos (" & Format(precos.Count, "#,##0") & " materiais)"
     End If
 
     Set CarregarPrecos = precos
@@ -2215,6 +2771,9 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     Dim wsP As Worksheet
     Dim wbExt As Workbook       ' workbook externo aberto por nos (p/ fechar depois)
     Set wbExt = Nothing
+    ' sem fonte o cache nao e gravado e a funcao roda de novo na etapa seguinte:
+    ' avisa so na primeira vez
+    Dim jaAvisou As Boolean : jaAvisou = (mFontePrecos <> "")
 
     ' --- 1) aba interna ---
     On Error Resume Next
@@ -2222,11 +2781,23 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     If wsP Is Nothing Then Set wsP = wb.Worksheets("BASE DE PRECOS")
     If wsP Is Nothing Then Set wsP = wb.Worksheets("BASE DE PRE" & ChrW(199) & "OS")
     On Error GoTo 0
+    If Not wsP Is Nothing Then mFontePrecos = "aba interna '" & wsP.Name & "'" : mFontePrecosData = Empty
 
     ' --- 2) arquivo externo ---
     If wsP Is Nothing Then
         Dim cam As String : cam = CaminhoBasePrecos(wb)
-        If Len(cam) = 0 Then Set CarregarFaixaPrecos = fx : Exit Function
+        If Len(cam) = 0 Then
+            mFontePrecos = "NENHUMA (sem aba BASE PRECOS e sem arquivo BASE DE PRECOS.xlsx nas pastas conhecidas)"
+            mFontePrecosData = Empty
+            If Not jaAvisou Then AvisoExec "PRECOS: nenhuma base de precos encontrada - PRECO UNITARIO " & _
+                                          "e alertas de preco ficam sem referencia"
+            Set CarregarFaixaPrecos = fx : Exit Function
+        End If
+        mFontePrecos = "arquivo externo '" & cam & "'"
+        mFontePrecosData = Empty
+        On Error Resume Next
+        mFontePrecosData = FileDateTime(cam)
+        On Error GoTo 0
         Dim nomeArq As String : nomeArq = Dir(cam)
         On Error Resume Next
         Dim wbJa As Workbook : Set wbJa = Workbooks(nomeArq)   ' ja aberto?
@@ -2235,7 +2806,12 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
             On Error Resume Next
             Set wbExt = Workbooks.Open(cam, ReadOnly:=True, UpdateLinks:=0)
             On Error GoTo 0
-            If wbExt Is Nothing Then Set CarregarFaixaPrecos = fx : Exit Function
+            If wbExt Is Nothing Then
+                mFontePrecos = "arquivo externo '" & cam & "' NAO ABRIU"
+                If Not jaAvisou Then AvisoExec "PRECOS: o arquivo " & cam & " nao abriu - PRECO UNITARIO " & _
+                                              "e alertas de preco ficam sem referencia"
+                Set CarregarFaixaPrecos = fx : Exit Function
+            End If
             Set wsP = wbExt.Worksheets(1)
         Else
             Set wsP = wbJa.Worksheets(1)
@@ -2259,20 +2835,33 @@ Private Function CarregarFaixaPrecos(wb As Workbook) As Object
     If cTxt = 0 Then cTxt = 2
     If cMin = 0 Then cMin = 4
     If cMax = 0 Then cMax = 5
+    ' base com menos colunas que as posicoes-padrao: ler ao menos ate a 5a evita
+    ' estourar o array (erro 9) - a coluna ausente e lida como vazia
+    If lastC < 5 Then lastC = 5
 
     Dim lastR As Long : lastR = wsP.Cells(wsP.Rows.Count, cMat).End(xlUp).Row
     If lastR >= 2 Then
         Dim dd As Variant : dd = wsP.Range(wsP.Cells(2, 1), wsP.Cells(lastR, lastC)).Value
         Dim r As Long
         For r = 1 To UBound(dd, 1)
-            Dim cod As String : cod = NormCod(dd(r, cMat))
+            ' IsError: celula com #N/D derrubava a carga inteira (CStr falha nela)
+            Dim cod As String : cod = ""
+            If Not IsError(dd(r, cMat)) Then cod = NormCod(dd(r, cMat))
             If cod <> "" And Not fx.Exists(cod) Then
-                fx.Add cod, Val0(dd(r, cMin)) & "|" & Val0(dd(r, cMax)) & "|" & Trim(CStr(dd(r, cTxt)))
+                Dim txtM As String : txtM = ""
+                If Not IsError(dd(r, cTxt)) Then txtM = Trim(CStr(dd(r, cTxt)))
+                fx.Add cod, Val0(dd(r, cMin)) & "|" & Val0(dd(r, cMax)) & "|" & txtM
             End If
         Next r
     End If
 
     If Not wbExt Is Nothing Then wbExt.Close SaveChanges:=False
+    If fx.Count = 0 Then
+        mFontePrecos = mFontePrecos & " (vazia: nenhum material lido)"
+        If Not jaAvisou Then AvisoExec "PRECOS: a base de precos usada nao tem materiais legiveis"
+    Else
+        mFontePrecos = mFontePrecos & " - " & Format(fx.Count, "#,##0") & " materiais"
+    End If
     Set mFaixaCache = fx
     Set CarregarFaixaPrecos = fx
 End Function
@@ -2288,22 +2877,18 @@ Private Sub ProcessarPrecoUnitario(wsBase As Worksheet, ws As Worksheet)
     Dim iPep3 As Long, iPep4 As Long, iCod As Long, iDesc As Long
     Dim iFam As Long, iTipo As Long, iVal As Long, iQtd As Long, iUml As Long
     Dim iTipoPep As Long
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case h
-            Case "PEP3NIVEL":   iPep3 = c
-            Case "PEP4NIVEL":   iPep4 = c
-            Case "COD MAT":     iCod = c
-            Case "DESC MAT":    iDesc = c
-            Case "FAMILIA":     iFam = c
-            Case "TIPO":        iTipo = c
-            Case "VALOR":       iVal = c
-            Case "MAT LIB SAP": iQtd = c
-            Case "UND":         iUml = c
-            Case "TIPO PEP":    iTipoPep = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    iPep3    = ColIdx(mapa, "PEP3NIVEL")
+    iPep4    = ColIdx(mapa, "PEP4NIVEL")
+    iCod     = ColIdx(mapa, "COD MAT")
+    iDesc    = ColIdx(mapa, "DESC MAT")
+    iFam     = ColIdx(mapa, "FAMILIA")
+    iTipo    = ColIdx(mapa, "TIPO")
+    iVal     = ColIdx(mapa, "VALOR")
+    iQtd     = ColIdx(mapa, "MAT LIB SAP")
+    iUml     = ColIdx(mapa, "UND")
+    iTipoPep = ColIdx(mapa, "TIPO PEP")
 
     ' Cabecalho
     Dim hdrs As Variant
@@ -2380,26 +2965,8 @@ Private Sub ProcessarPrecoUnitario(wsBase As Worksheet, ws As Worksheet)
             ' TIPO OD: classifica o PEP pelo sufixo do PEP4 (.I/.M/.S/.D) ou pela coluna TIPO PEP
             Dim pep4OD As String : pep4OD = "" : If iPep4 > 0 Then pep4OD = UCase(Trim(CStr(d(i, iPep4))))
             Dim tpRaw As String : tpRaw = "" : If iTipoPep > 0 Then tpRaw = UCase(Trim(CStr(d(i, iTipoPep))))
-            Dim tipoOD As String
-            If Right(pep4OD, 2) = ".I" Then
-                tipoOD = "ODI"
-            ElseIf Right(pep4OD, 2) = ".M" Then
-                tipoOD = "ODM"
-            ElseIf Right(pep4OD, 2) = ".S" Then
-                tipoOD = "ODS"
-            ElseIf Right(pep4OD, 2) = ".D" Then
-                tipoOD = "ODD"
-            ElseIf tpRaw = "I" Then
-                tipoOD = "ODI"
-            ElseIf tpRaw = "M" Then
-                tipoOD = "ODM"
-            ElseIf tpRaw = "S" Then
-                tipoOD = "ODS"
-            ElseIf tpRaw = "D" Then
-                tipoOD = "ODD"
-            Else
-                tipoOD = "-"
-            End If
+            Dim tipoOD As String : tipoOD = ClassificarOD(pep4OD, tpRaw)
+            If tipoOD = "" Then tipoOD = "-"
             outA(nOut, 14) = tipoOD
 Prox:
         Next i
@@ -2494,7 +3061,19 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
 
     Dim r As Long, p3 As String
 
+    ' PEPs sem material baixado no projeto: item "baixado" = MAT PRJ CAD diferente
+    ' de zero; PEP sem baixa = TODOS os seus itens com MAT PRJ CAD zero ou vazio
+    Dim p3Itn As Object : Set p3Itn = CreateObject("Scripting.Dictionary")  ' n itens
+    Dim p3Bx  As Object : Set p3Bx  = CreateObject("Scripting.Dictionary")  ' n itens baixados
+    Dim p3Lib As Object : Set p3Lib = CreateObject("Scripting.Dictionary")  ' soma |MAT LIB SAP|
+    Dim p4Itn As Object : Set p4Itn = CreateObject("Scripting.Dictionary")
+    Dim p4Bx  As Object : Set p4Bx  = CreateObject("Scripting.Dictionary")
+    Dim p4Lib As Object : Set p4Lib = CreateObject("Scripting.Dictionary")
+    Dim p4Val As Object : Set p4Val = CreateObject("Scripting.Dictionary")  ' soma |VALOR|
+    Dim p4P3  As Object : Set p4P3  = CreateObject("Scripting.Dictionary")  ' PEP4 -> PEP3
+
     ' 1) ANALISE SAP x PRJ (dados a partir da linha 10): valor + aprovacao
+    '    (col 2 = PEP4, 6 = VALOR, 9 = MAT LIB SAP, 10 = MAT PRJ CAD, 14 = APROVACAO)
     Dim lastD As Long : lastD = wsDet.Cells(wsDet.Rows.Count, 1).End(xlUp).Row
     If lastD >= 10 Then
         Dim dd As Variant : dd = wsDet.Range(wsDet.Cells(10, 1), wsDet.Cells(lastD, 15)).Value
@@ -2505,14 +3084,29 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
                 valOb(p3) = valOb(p3) + Abs(Val0(dd(r, 6)))
                 If Not repOb.Exists(p3) Then repOb.Add p3, False
                 If InStr(UCase(CStr(dd(r, 14))), "REPROVADO") > 0 Then repOb(p3) = True
+
+                Dim bxR As Boolean : bxR = (Val0(dd(r, 10)) <> 0)
+                Dim lbR As Double : lbR = Abs(Val0(dd(r, 9)))
+                p3Itn(p3) = p3Itn(p3) + 1
+                p3Lib(p3) = p3Lib(p3) + lbR
+                If bxR Then p3Bx(p3) = p3Bx(p3) + 1
+                Dim p4R As String : p4R = Trim(CStr(dd(r, 2)))
+                If p4R <> "" Then
+                    p4Itn(p4R) = p4Itn(p4R) + 1
+                    p4Lib(p4R) = p4Lib(p4R) + lbR
+                    p4Val(p4R) = p4Val(p4R) + Abs(Val0(dd(r, 6)))
+                    If bxR Then p4Bx(p4R) = p4Bx(p4R) + 1
+                    If Not p4P3.Exists(p4R) Then p4P3.Add p4R, p3
+                End If
             End If
         Next r
     End If
 
-    ' 2) ALERTA CRITICO (dados a partir da linha 4, col 2 = PEP3) - leitura em array
+    ' 2) ALERTA CRITICO (col 2 = PEP3) - leitura em array
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsAlertaC)
     Dim lastA As Long : lastA = wsAlertaC.Cells(wsAlertaC.Rows.Count, 1).End(xlUp).Row
-    If lastA >= 4 Then
-        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(4, 1), wsAlertaC.Cells(lastA, 2)).Value
+    If lastA >= r0A Then
+        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(r0A, 1), wsAlertaC.Cells(lastA, 2)).Value
         For r = 1 To UBound(aa, 1)
             p3 = Trim(CStr(aa(r, 2)))
             If p3 <> "" Then
@@ -2666,6 +3260,9 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
                 If vSo > 0 Then diag = diag & " (sobrepreco " & FmtKPI(vSo) & ")"
             End If
             If nCo > 0 Then diag = diag & IIf(diag <> "", " | ", "") & nCo & " COM fora do previsto"
+            If p3Itn.Exists(p3) And Not p3Bx.Exists(p3) Then
+                diag = diag & IIf(diag <> "", " | ", "") & "nenhum material baixado no PRJ"
+            End If
             If diag = "" Then diag = "Sem apontamentos"
 
             outA(ix + 1, 1) = ix + 1
@@ -2687,7 +3284,7 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     End If
 
     ' ---------------- formatacao ----------------
-    Dim wds As Variant : wds = Array(5, 26, 14, 13, 9, 13, 14, 15, 8, 9, 70)
+    Dim wds As Variant : wds = Array(7, 26, 14, 13, 9, 13, 14, 15, 8, 9, 70)
     For c = 1 To 11 : ws.Columns(c).ColumnWidth = wds(c - 1) : Next c
 
     ' Formatacao em LOTE: base numa chamada so; cores por BLOCOS de risco
@@ -2742,6 +3339,13 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
 
     If outRow > 4 Then ws.Range(ws.Cells(3, 1), ws.Cells(3, 11)).AutoFilter
 
+    ' Secao de PEPs sem material baixado no PRJ, 3 linhas abaixo do ranking. As
+    ' linhas em branco isolam os blocos: autofiltro, contador do titulo e o nome
+    ' dadosRanking param no fim do ranking (UltimaLinhaContigua).
+    Dim rSec As Long
+    If nOb > 0 Then rSec = 3 + nOb + 3 Else rSec = 7
+    SecaoSemBaixaPRJ ws, rSec, p3Itn, p3Bx, p3Lib, valOb, repOb, p4Itn, p4Bx, p4Lib, p4Val, p4P3
+
     On Error Resume Next
     ws.Activate
     ActiveWindow.DisplayGridlines = False
@@ -2761,6 +3365,185 @@ End Sub
 '    4. PRECO UNITARIO ganha banda de titulo (nao tinha)
 '    5. Drill-down: cards do PAINEL viram atalhos para a aba de origem
 ' ===========================================================================
+' Secao "PEPs sem material baixado no projeto" do RANKING DE RISCO.
+'   PEP3: todos os itens do PEP3 com MAT PRJ CAD zero ou vazio.
+'   PEP4: idem no PEP4 - listado so quando o PEP3 dele TEM baixa em outro PEP4
+'         (se o PEP3 inteiro esta sem baixa, a linha do PEP3 ja o cobre).
+' Cada grupo vem ordenado por valor decrescente.
+Private Sub SecaoSemBaixaPRJ(ws As Worksheet, ByVal r0 As Long, _
+        p3Itn As Object, p3Bx As Object, p3Lib As Object, p3Val As Object, p3Rep As Object, _
+        p4Itn As Object, p4Bx As Object, p4Lib As Object, p4Val As Object, p4P3 As Object)
+
+    ' quantos PEP4 cada PEP3 tem (para a observacao da linha do PEP3)
+    Dim p3NP4 As Object : Set p3NP4 = CreateObject("Scripting.Dictionary")
+    Dim k As Variant
+    For Each k In p4P3.Keys
+        p3NP4(p4P3(k)) = p3NP4(p4P3(k)) + 1
+    Next k
+
+    ' lista: PEP3 sem baixa primeiro (1..n3), depois PEP4 sem baixa (n3+1..n)
+    Dim pp() As String, vl() As Double, n As Long, n3 As Long
+    Dim nMax As Long : nMax = p3Itn.Count + p4Itn.Count
+    If nMax > 0 Then ReDim pp(1 To nMax) : ReDim vl(1 To nMax)
+    For Each k In p3Itn.Keys
+        If Not p3Bx.Exists(k) Then
+            n = n + 1 : pp(n) = CStr(k)
+            If p3Val.Exists(k) Then vl(n) = p3Val(k)
+        End If
+    Next k
+    n3 = n
+    For Each k In p4Itn.Keys
+        If Not p4Bx.Exists(k) Then
+            If p3Bx.Exists(p4P3(k)) Then
+                n = n + 1 : pp(n) = CStr(k) : vl(n) = p4Val(k)
+            End If
+        End If
+    Next k
+    OrdenarPorValor pp, vl, 1, n3
+    OrdenarPorValor pp, vl, n3 + 1, n
+
+    ' -- titulo da secao --
+    With ws.Range(ws.Cells(r0, 1), ws.Cells(r0, 11))
+        .Merge
+        .Value = "PEPs SEM MATERIAL BAIXADO NO PROJETO  (MAT PRJ CAD zerado ou vazio em todos os itens)" & _
+                 "   -   " & n3 & " PEP3  |  " & (n - n3) & " PEP4"
+        .Font.Name = "Segoe UI Semibold" : .Font.Size = 12 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = RGB(176, 0, 0)
+        .HorizontalAlignment = xlLeft : .VerticalAlignment = xlCenter : .IndentLevel = 1
+    End With
+    ws.Rows(r0).RowHeight = 24
+
+    ' -- cabecalho (H:J mesclado = PEP3 do PEP4) --
+    Dim h As Variant
+    h = Array("NIVEL", "PEP", "VALOR", "SITUACAO", "ITENS", "MAT LIB SAP", "TIPO OD", _
+              "PEP3 DO PEP4", "", "", "OBSERVACAO")
+    Dim c As Long
+    For c = 1 To 11
+        With ws.Cells(r0 + 1, c)
+            .Value = h(c - 1)
+            .Font.Name = "Segoe UI Semibold" : .Font.Bold = True : .Font.Size = 10
+            .Font.Color = RGB(235, 240, 248) : .Interior.Color = RGB(31, 41, 59)
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(60, 70, 90)
+        End With
+    Next c
+    ws.Range(ws.Cells(r0 + 1, 8), ws.Cells(r0 + 1, 10)).Merge
+    ws.Rows(r0 + 1).RowHeight = 26
+
+    If n = 0 Then
+        With ws.Cells(r0 + 2, 1)
+            .Value = "Todos os PEP3 e PEP4 tem ao menos um material baixado em MAT PRJ CAD."
+            .Font.Italic = True : .Font.Color = RGB(0, 128, 0)
+        End With
+        Exit Sub
+    End If
+
+    ' -- linhas (escrita unica em array) --
+    Dim outS() As Variant : ReDim outS(1 To n, 1 To 11)
+    Dim i As Long, pep As String, p3d As String, libS As Double, obs As String, nP4 As Long
+    For i = 1 To n
+        pep = pp(i)
+        If i <= n3 Then
+            p3d = pep
+            libS = p3Lib(pep)
+            nP4 = 0 : If p3NP4.Exists(pep) Then nP4 = p3NP4(pep)
+            outS(i, 1) = "PEP3"
+            outS(i, 5) = p3Itn(pep)
+            obs = "Nenhum dos " & p3Itn(pep) & " itens (em " & nP4 & _
+                  " PEP4) tem MAT PRJ CAD baixado"
+        Else
+            p3d = CStr(p4P3(pep))
+            libS = p4Lib(pep)
+            outS(i, 1) = "PEP4"
+            outS(i, 5) = p4Itn(pep)
+            outS(i, 7) = ClassificarOD(pep, "")
+            outS(i, 8) = p3d
+            obs = "O PEP3 tem baixa em outros PEP4; este PEP4 nao tem nenhuma (" & _
+                  p4Itn(pep) & " itens)"
+        End If
+        ' SAP com material liberado e projeto sem nada baixado = o sinal mais forte
+        ' (Format "#,##0.##" deixaria virgula sobrando em inteiro: "1.234,")
+        If libS > 0 Then obs = obs & " | SAP liberou " & _
+            IIf(libS = Int(libS), Format(libS, "#,##0"), Format(libS, "#,##0.00")) & _
+            " - material sem projeto"
+        outS(i, 2) = pep
+        outS(i, 3) = vl(i)
+        If p3Rep.Exists(p3d) Then outS(i, 4) = IIf(p3Rep(p3d), "REPROVADO", "APROVADO")
+        outS(i, 6) = libS
+        outS(i, 11) = obs
+    Next i
+    Dim rI As Long : rI = r0 + 2
+    Dim rF As Long : rF = r0 + 1 + n
+    ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11)).Value = outS
+
+    ' -- formatacao: PEP3 em vermelho, PEP4 em ambar --
+    With ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11))
+        .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Color = RGB(45, 52, 64)
+        .VerticalAlignment = xlCenter
+        .Borders(xlInsideHorizontal).LineStyle = xlContinuous
+        .Borders(xlInsideHorizontal).Color = RGB(255, 255, 255)
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(255, 255, 255)
+    End With
+    ws.Range(ws.Cells(rI, 8), ws.Cells(rF, 10)).Merge True     ' H:J por linha
+    ws.Range(ws.Cells(rI, 3), ws.Cells(rF, 3)).NumberFormat = "#,##0.00"
+    ws.Range(ws.Cells(rI, 6), ws.Cells(rF, 6)).NumberFormat = "#,##0.00"
+    ws.Range(ws.Cells(rI, 4), ws.Cells(rF, 5)).HorizontalAlignment = xlCenter
+    ws.Range(ws.Cells(rI, 7), ws.Cells(rF, 7)).HorizontalAlignment = xlCenter
+    If n3 > 0 Then
+        ws.Range(ws.Cells(rI, 1), ws.Cells(rI + n3 - 1, 11)).Interior.Color = RGB(252, 226, 228)
+        With ws.Range(ws.Cells(rI, 1), ws.Cells(rI + n3 - 1, 1))
+            .Interior.Color = RGB(192, 0, 0) : .Font.Color = RGB(255, 255, 255)
+            .Font.Bold = True : .HorizontalAlignment = xlCenter
+        End With
+    End If
+    If n > n3 Then
+        ws.Range(ws.Cells(rI + n3, 1), ws.Cells(rF, 11)).Interior.Color = RGB(255, 244, 214)
+        With ws.Range(ws.Cells(rI + n3, 1), ws.Cells(rF, 1))
+            .Interior.Color = RGB(176, 124, 0) : .Font.Color = RGB(255, 255, 255)
+            .Font.Bold = True : .HorizontalAlignment = xlCenter
+        End With
+    End If
+    For i = 1 To n
+        If CStr(outS(i, 4)) = "REPROVADO" Then
+            With ws.Cells(rI + i - 1, 4)
+                .Font.Color = RGB(192, 0, 0) : .Font.Bold = True
+            End With
+        End If
+    Next i
+End Sub
+
+' Ordena pp/vl por vl decrescente no intervalo [lo, hi] (selection sort:
+' algumas centenas de PEPs no maximo).
+Private Sub OrdenarPorValor(pp() As String, vl() As Double, ByVal lo As Long, ByVal hi As Long)
+    Dim a As Long, b As Long, m As Long, tS As String, tV As Double
+    For a = lo To hi - 1
+        m = a
+        For b = a + 1 To hi
+            If vl(b) > vl(m) Then m = b
+        Next b
+        If m <> a Then
+            tS = pp(a) : pp(a) = pp(m) : pp(m) = tS
+            tV = vl(a) : vl(a) = vl(m) : vl(m) = tV
+        End If
+    Next a
+End Sub
+
+' Ultima linha do bloco CONTIGUO de dados na coluna, a partir de linhaIni.
+' Diferente de End(xlUp) a partir do fim da planilha, nao engole blocos
+' colocados abaixo (ex.: a secao de PEPs sem baixa no RANKING DE RISCO).
+' Devolve linhaIni - 1 quando o bloco esta vazio.
+Private Function UltimaLinhaContigua(ws As Worksheet, ByVal linhaIni As Long, _
+                                     ByVal col As Long) As Long
+    If IsEmpty(ws.Cells(linhaIni, col).Value) Then
+        UltimaLinhaContigua = linhaIni - 1
+    ElseIf IsEmpty(ws.Cells(linhaIni + 1, col).Value) Then
+        UltimaLinhaContigua = linhaIni
+    Else
+        UltimaLinhaContigua = ws.Cells(linhaIni, col).End(xlDown).Row
+    End If
+End Function
+
 Private Function CorAcento(nome As String) As Long
     Select Case nome
         Case "PAINEL DO GESTOR":   CorAcento = RGB(17, 24, 39)     ' navy
@@ -2842,7 +3625,8 @@ Private Sub AppendContagem(wb As Workbook, aba As String, _
     Set ws = wb.Worksheets(aba)
     On Error GoTo 0
     If ws Is Nothing Then Exit Sub
-    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    ' bloco contiguo: nao conta secoes colocadas abaixo dos dados
+    Dim lastR As Long : lastR = UltimaLinhaContigua(ws, primeiraLinhaDados, 1)
     Dim n As Long : n = lastR - primeiraLinhaDados + 1
     If n < 0 Then n = 0
     If n = 1 Then
@@ -2914,7 +3698,15 @@ Private Sub AplicarDesignGlobal(wb As Workbook)
     End If
 
     ' ---- 2) contadores dinamicos nos titulos ----
-    AppendContagem wb, "ALERTA CRITICO", 4, " apontamento(s)"
+    ' ALERTA CRITICO tem topo de altura variavel (resumo por tipo): pergunta
+    ' onde os dados comecam em vez de assumir a linha 4.
+    Dim wsAC As Worksheet
+    On Error Resume Next
+    Set wsAC = wb.Worksheets("ALERTA CRITICO")
+    On Error GoTo 0
+    If Not wsAC Is Nothing Then
+        AppendContagem wb, "ALERTA CRITICO", PrimeiraLinhaAlerta(wsAC), " apontamento(s)"
+    End If
     AppendContagem wb, "RANKING DE RISCO", 4, " obra(s)"
 
     Set ws = Nothing
@@ -2974,7 +3766,9 @@ Private Sub AplicarDesignGlobal(wb As Workbook)
                 Case "PAINEL DO GESTOR":   congRow = 0    ' sem congelamento
                 Case "ANALISE SAP x PRJ":  congRow = 11   ' dados comecam na 11
                 Case "RACIONALIZACAO COM": congRow = 4
-                Case Else:                 congRow = 5    ' PRECOS, ALERTAS, RANKING
+                ' +1: a barra de navegacao empurra tudo uma linha para baixo
+                Case "ALERTA CRITICO":     congRow = PrimeiraLinhaAlerta(ws) + 1
+                Case Else:                 congRow = 5    ' PRECOS, RANKING
             End Select
             InserirBarraNav ws, nomes, rots, CStr(nomes(i)), congRow
         End If
@@ -2985,24 +3779,18 @@ End Sub
 Private Function AcharBaseInventario(wb As Workbook) As Worksheet
 
     Dim ws      As Worksheet
-    Dim c       As Long, lastC As Long
-    Dim h       As String
-    Dim hasSAP  As Boolean, hasPRJ As Boolean
+    Dim mp      As Object
 
     For Each ws In wb.Worksheets
         Select Case ws.Name
-            Case "PAINEL DO GESTOR", "ANALISE SAP x PRJ", "RESUMO SAP x PRJ", "RACIONALIZACAO COM", "ALERTA CRITICO", "PRECO UNITARIO", "RANKING DE RISCO", "CONFIG", "HISTORICO", "LOG EXECUCAO", "TESTES", "DIAGNOSTICO BASE", "DEVOLUCOES"
+            Case "PAINEL DO GESTOR", "ANALISE SAP x PRJ", "RESUMO SAP x PRJ", "RACIONALIZACAO COM", "ALERTA CRITICO", "PRECO UNITARIO", "RANKING DE RISCO", "CONFIG", "HISTORICO", "LOG EXECUCAO", "TESTES", "DIAGNOSTICO BASE", "DEVOLUCOES", "EQUIVALENCIAS", "HISTORICO KPI"
                 ' aba de saida / apoio - ignora
             Case Else
                 If ws.UsedRange.Rows.Count > 1 Then
-                    hasSAP = False : hasPRJ = False
-                    lastC = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-                    For c = 1 To lastC
-                        h = NormStr(CStr(ws.Cells(1, c).Value))
-                        If h = "MAT LIB SAP" Then hasSAP = True
-                        If h = "MAT PRJ CAD" Then hasPRJ = True
-                    Next c
-                    If hasSAP And hasPRJ Then
+                    ' pelo mapa de colunas: aceita MAT LIB SAP / ATENDIDO SAP e
+                    ' MAT PRJ CAD / TOMBADO PROJ (layout antigo ou novo)
+                    Set mp = MapaColunas(ws)
+                    If mp.Exists("MAT LIB SAP") And mp.Exists("MAT PRJ CAD") Then
                         Set AcharBaseInventario = ws
                         Exit Function
                     End If
@@ -3058,15 +3846,20 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
     Next k
     nAprov = nPep3 - nReprov
 
-    ' Alertas criticos (le ALERTA CRITICO, dados a partir da linha 4) + ranking por tipo
+    ' Alertas criticos (le ALERTA CRITICO) + ranking por tipo
     Dim tipos As Object : Set tipos = CreateObject("Scripting.Dictionary")
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsAlertaC)
     Dim lastA As Long : lastA = wsAlertaC.Cells(wsAlertaC.Rows.Count, 1).End(xlUp).Row
-    If lastA >= 4 Then
-        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(4, 1), wsAlertaC.Cells(lastA, 2)).Value
+    If lastA >= r0A Then
+        Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(r0A, 1), wsAlertaC.Cells(lastA, 2)).Value
         For r = 1 To UBound(aa, 1)
             Dim tA As String : tA = Trim(CStr(aa(r, 1)))
             ' ignora a linha informativa "Nenhum alerta..." da aba sem apontamentos
-            If tA <> "" And InStr(UCase(tA), "NENHUM ALERTA") = 0 Then
+            ' e os apontamentos QUALIDADE DA BASE, que sao replicas do
+            ' DIAGNOSTICO DA BASE e ja tem indicador proprio (nota de saude):
+            ' conta-los aqui inflaria o KPI de alertas por obra.
+            If tA <> "" And InStr(UCase(tA), "NENHUM ALERTA") = 0 _
+               And InStr(UCase(tA), "QUALIDADE DA BASE") = 0 Then
                 nAlertas = nAlertas + 1
                 If tipos.Exists(tA) Then tipos(tA) = tipos(tA) + 1 Else tipos.Add tA, 1
             End If
@@ -3114,14 +3907,27 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
     End With
     ws.Rows(2).RowHeight = 20
 
+    ' --- variacao vs. execucao anterior (aba HISTORICO KPI) ---
+    ' Lido ANTES de registrar esta rodada, senao a comparacao seria consigo mesma.
+    Dim kAnt As Variant
+    If Not mModoLote Then kAnt = LerUltimoKpiRun(wb)    ' lote: bases diferentes
+    Dim dTxt(1 To 4) As String, dCor(1 To 4) As Long
+    Dim temAnt As Boolean : temAnt = Not IsEmpty(kAnt)
+    If temAnt Then
+        dTxt(1) = TxtDelta(nPep3, kAnt(1), False, dCor(1))
+        dTxt(2) = TxtDelta(nReprov, kAnt(2), True, dCor(2))
+        dTxt(3) = TxtDelta(nAlertas, kAnt(3), True, dCor(3))
+        dTxt(4) = TxtDelta(nDiverg, kAnt(4), True, dCor(4))
+    End If
+
     ' --- KPI cards (linha 1 de cards: 4) ---
     CardGestor ws, 4, 1, "Valor total da obra", FmtKPI(valTot), RGB(255, 255, 255), RGB(17, 24, 39)
-    CardGestor ws, 4, 3, "PEPs analisados", Format(nPep3, "#,##0"), RGB(255, 255, 255), RGB(17, 24, 39)
+    CardGestor ws, 4, 3, "PEPs analisados", Format(nPep3, "#,##0"), RGB(255, 255, 255), RGB(17, 24, 39), dTxt(1), dCor(1)
     CardGestor ws, 4, 5, "PEPs aprovados", Format(nAprov, "#,##0") & "  (" & Format(pctAprov, "0") & "%)", RGB(231, 247, 237), RGB(21, 115, 71)
-    CardGestor ws, 4, 7, "PEPs reprovados", Format(nReprov, "#,##0"), RGB(252, 232, 233), RGB(192, 0, 0)
+    CardGestor ws, 4, 7, "PEPs reprovados", Format(nReprov, "#,##0"), RGB(252, 232, 233), RGB(192, 0, 0), dTxt(2), dCor(2)
     ' --- KPI cards (linha 2 de cards: 4) ---
-    CardGestor ws, 8, 1, "Alertas criticos", Format(nAlertas, "#,##0"), RGB(255, 248, 230), RGB(176, 124, 0)
-    CardGestor ws, 8, 3, "Divergencias de preco", Format(nDiverg, "#,##0"), RGB(234, 242, 250), RGB(31, 78, 121)
+    CardGestor ws, 8, 1, "Alertas criticos", Format(nAlertas, "#,##0"), RGB(255, 248, 230), RGB(176, 124, 0), dTxt(3), dCor(3)
+    CardGestor ws, 8, 3, "Divergencias de preco", Format(nDiverg, "#,##0"), RGB(234, 242, 250), RGB(31, 78, 121), dTxt(4), dCor(4)
     CardGestor ws, 8, 5, "Sobrepreco potencial", FmtKPI(sobrepreco), RGB(252, 232, 233), RGB(192, 0, 0)
     CardGestor ws, 8, 7, "Valor em risco (reprov.)", FmtKPI(valRisk), RGB(252, 232, 233), RGB(192, 0, 0)
 
@@ -3205,6 +4011,17 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
         Next a
     End If
 
+    ' Nota de saude da base (DIAGNOSTICO BASE ja rodou nesta altura)
+    Dim notaB As Double
+    Dim wsDg As Worksheet
+    On Error Resume Next
+    Set wsDg = wb.Worksheets("DIAGNOSTICO BASE")
+    If Not wsDg Is Nothing Then notaB = Val0(wsDg.Range("A5").Value)
+    On Error GoTo 0
+
+    ' Fecha a rodada no historico de KPIs (a proxima execucao compara com esta)
+    If Not mModoLote Then RegistrarKpiRun wb, nPep3, nReprov, nAlertas, nDiverg, valRisk, notaB
+
     ' Aparencia geral
     On Error Resume Next
     ws.Activate
@@ -3217,8 +4034,12 @@ Private Function ProcessarPainelGestor(wb As Workbook, wsBase As Worksheet, _
 End Function
 
 ' Desenha um cartao de KPI ocupando 2 colunas x 3 linhas (label + valor grande)
+' Card de KPI. Com 'delta' preenchido, a 3a linha do card deixa de fazer parte
+' do valor e vira o rodape de variacao vs. execucao anterior - a altura total
+' do card nao muda, entao o layout do painel continua o mesmo.
 Private Sub CardGestor(ws As Worksheet, ByVal topRow As Long, ByVal leftCol As Long, _
-        titulo As String, valor As String, corFundo As Long, corValor As Long)
+        titulo As String, valor As String, corFundo As Long, corValor As Long, _
+        Optional ByVal delta As String = "", Optional ByVal corDelta As Long = 0)
     With ws.Range(ws.Cells(topRow, leftCol), ws.Cells(topRow + 2, leftCol + 1))
         .Interior.Color = corFundo
         .Borders.LineStyle = xlContinuous : .Borders.Color = RGB(222, 226, 232)
@@ -3229,12 +4050,27 @@ Private Sub CardGestor(ws As Worksheet, ByVal topRow As Long, ByVal leftCol As L
         .Font.Color = RGB(110, 118, 130)
         .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
     End With
-    With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 2, leftCol + 1))
-        .Merge : .Value = valor
-        .Font.Name = "Segoe UI" : .Font.Size = 19 : .Font.Bold = True
-        .Font.Color = corValor
-        .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
-    End With
+    If delta = "" Then
+        With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 2, leftCol + 1))
+            .Merge : .Value = valor
+            .Font.Name = "Segoe UI" : .Font.Size = 19 : .Font.Bold = True
+            .Font.Color = corValor
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+    Else
+        With ws.Range(ws.Cells(topRow + 1, leftCol), ws.Cells(topRow + 1, leftCol + 1))
+            .Merge : .Value = valor
+            .Font.Name = "Segoe UI" : .Font.Size = 17 : .Font.Bold = True
+            .Font.Color = corValor
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+        With ws.Range(ws.Cells(topRow + 2, leftCol), ws.Cells(topRow + 2, leftCol + 1))
+            .Merge : .Value = delta
+            .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Bold = True
+            .Font.Color = corDelta
+            .HorizontalAlignment = xlCenter : .VerticalAlignment = xlCenter
+        End With
+    End If
     ws.Rows(topRow).RowHeight = 18
     ws.Rows(topRow + 1).RowHeight = 22
     ws.Rows(topRow + 2).RowHeight = 18
@@ -3247,39 +4083,177 @@ End Sub
 
 ' Registra o resultado de uma etapa no log; erro nao aborta o processo (erro granular).
 Private Sub FimEtapa(erroNum As Long, erroDesc As String, etapa As String, t0 As Double)
+    Dim seg As Double : seg = Timer - t0
+    If seg < 0 Then seg = seg + 86400           ' virada da meia-noite
     If erroNum <> 0 Then
         mFalhas = mFalhas & vbCrLf & "  - " & etapa & ": " & erroDesc
         LogAdd "FALHA [" & etapa & "]: (" & erroNum & ") " & erroDesc
     Else
-        LogAdd etapa & " OK (" & Format(Timer - t0, "0.0") & "s)"
+        LogAdd etapa & " OK (" & Format(seg, "0.0") & "s)"
+    End If
+    If mEtapas Is Nothing Then Set mEtapas = New Collection
+    mEtapas.Add Array(etapa, (erroNum = 0), seg, IIf(erroNum <> 0, erroDesc, ""))
+End Sub
+
+' Aviso nao fatal da execucao (a analise seguiu, mas sem algo): vai para a
+' mensagem final, para o LOG e para o bloco SAUDE DA EXECUCAO do painel.
+Private Sub AvisoExec(ByVal msg As String)
+    mFalhas = mFalhas & vbCrLf & "  - " & msg
+    mAvisosExec = mAvisosExec & vbCrLf & "  - " & msg
+    LogAdd "AVISO: " & msg
+End Sub
+
+' Bloco SAUDE DA EXECUCAO no fim do PAINEL DO GESTOR: cada etapa com status e
+' tempo, a fonte de precos usada e os avisos. Com falha ou aviso, o subtitulo
+' do painel ganha o selo da execucao. Escrito depois de TODAS as etapas, entao
+' vai junto no arquivo exportado pelo modo lote (antes o aviso so existia na
+' MsgBox final e no LOG oculto, e o resultado exportado parecia completo).
+Private Sub EscreverSaudeExecucao(ws As Worksheet, wsBase As Worksheet)
+    Dim it As Variant, nFal As Long
+    If Not mEtapas Is Nothing Then
+        For Each it In mEtapas
+            If Not CBool(it(1)) Then nFal = nFal + 1
+        Next it
+    End If
+    Dim precoRuim As Boolean
+    precoRuim = (Left(mFontePrecos, 7) = "NENHUMA" Or InStr(mFontePrecos, "NAO ABRIU") > 0 _
+                 Or InStr(mFontePrecos, "vazia") > 0)
+    Dim selo As String, corSelo As Long
+    If nFal > 0 Then
+        selo = "ANALISE INCOMPLETA: " & nFal & " etapa(s) com falha" : corSelo = RGB(192, 0, 0)
+    ElseIf mAvisosExec <> "" Or precoRuim Then
+        selo = "ANALISE COM AVISOS" : corSelo = RGB(176, 124, 0)
+    Else
+        selo = "EXECUCAO OK" : corSelo = RGB(21, 115, 71)
+    End If
+
+    ' 3 linhas abaixo do ultimo conteudo do painel
+    Dim uR As Range : Set uR = ws.Cells.Find("*", , xlFormulas, xlPart, xlByRows, xlPrevious)
+    Dim r As Long : r = 3 : If Not uR Is Nothing Then r = uR.Row + 3
+
+    With ws.Range(ws.Cells(r, 1), ws.Cells(r, 8))
+        .Merge : .Value = "SAUDE DA EXECUCAO  -  " & selo
+        .Font.Name = "Segoe UI" : .Font.Size = 12 : .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255) : .Interior.Color = corSelo
+        .HorizontalAlignment = xlLeft : .VerticalAlignment = xlCenter : .IndentLevel = 1
+    End With
+    ws.Rows(r).RowHeight = 26
+    r = r + 1
+    SaudeLinha ws, r, "ETAPA", "STATUS", "TEMPO (s)", "DETALHE", RGB(31, 41, 59), RGB(235, 240, 248), True
+    r = r + 1
+    If Not mEtapas Is Nothing Then
+        For Each it In mEtapas
+            SaudeLinha ws, r, CStr(it(0)), IIf(CBool(it(1)), "OK", "FALHA"), Format(it(2), "0.0"), _
+                       CStr(it(3)), IIf(CBool(it(1)), RGB(231, 247, 237), RGB(252, 226, 228)), _
+                       IIf(CBool(it(1)), RGB(21, 115, 71), RGB(192, 0, 0)), False
+            r = r + 1
+        Next it
+    End If
+    ' fonte de precos (cadeia: aba interna -> arquivo externo)
+    Dim txtF As String : txtF = IIf(mFontePrecos <> "", mFontePrecos, "nao consultada")
+    If Not IsEmpty(mFontePrecosData) Then txtF = txtF & " - alterado em " & Format(mFontePrecosData, "dd/mm/yyyy")
+    SaudeLinha ws, r, "FONTE DE PRECOS (faixa MIN/MAX)", IIf(precoRuim, "ATENCAO", "OK"), "", txtF, _
+               IIf(precoRuim, RGB(255, 244, 214), RGB(244, 247, 250)), _
+               IIf(precoRuim, RGB(176, 124, 0), RGB(45, 52, 64)), False
+    r = r + 1
+    If mFontePrecosRef <> "" Then
+        SaudeLinha ws, r, "PRECO DE REFERENCIA (UC SUBVAL.)", "OK", "", mFontePrecosRef, _
+                   RGB(244, 247, 250), RGB(45, 52, 64), False
+        r = r + 1
+    End If
+    ' avisos nao fatais, um por linha
+    If mAvisosExec <> "" Then
+        Dim av As Variant
+        For Each av In Split(Mid(mAvisosExec, 3), vbCrLf)
+            If Trim(CStr(av)) <> "" Then
+                SaudeLinha ws, r, "AVISO", "ATENCAO", "", Trim(Replace(CStr(av), "  - ", "", 1, 1)), _
+                           RGB(255, 244, 214), RGB(176, 124, 0), False
+                r = r + 1
+            End If
+        Next av
+    End If
+
+    ' selo no subtitulo do painel ("Analise de Inventario - Base: ...")
+    If selo <> "EXECUCAO OK" Then
+        Dim rs As Long
+        For rs = 1 To 6
+            If Left(CStr(ws.Cells(rs, 1).Value), 21) = "Analise de Inventario" Then
+                ws.Cells(rs, 1).Value = CStr(ws.Cells(rs, 1).Value) & "   |   " & ChrW(&H26A0) & " " & selo
+                ws.Cells(rs, 1).Font.Color = RGB(255, 196, 0)
+                ws.Cells(rs, 1).Font.Bold = True
+                Exit For
+            End If
+        Next rs
     End If
 End Sub
 
+' Uma linha do bloco SAUDE DA EXECUCAO: A:C etapa | D status | E tempo | F:H detalhe.
+Private Sub SaudeLinha(ws As Worksheet, ByVal r As Long, ByVal etapa As String, _
+        ByVal status As String, ByVal tempo As String, ByVal detalhe As String, _
+        ByVal corFundo As Long, ByVal corStatus As Long, ByVal cabecalho As Boolean)
+    ws.Range(ws.Cells(r, 1), ws.Cells(r, 3)).Merge
+    ws.Range(ws.Cells(r, 6), ws.Cells(r, 8)).Merge
+    ws.Cells(r, 1).Value = etapa : ws.Cells(r, 4).Value = status
+    ws.Cells(r, 5).Value = tempo : ws.Cells(r, 6).Value = detalhe
+    With ws.Range(ws.Cells(r, 1), ws.Cells(r, 8))
+        .Interior.Color = corFundo
+        .Font.Name = "Segoe UI" : .Font.Size = 9
+        .Font.Color = IIf(cabecalho, corStatus, RGB(45, 52, 64))
+        .Font.Bold = cabecalho
+        .VerticalAlignment = xlCenter
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(222, 226, 232)
+    End With
+    ws.Range(ws.Cells(r, 4), ws.Cells(r, 5)).HorizontalAlignment = xlCenter
+    If Not cabecalho Then
+        ws.Cells(r, 4).Font.Bold = True : ws.Cells(r, 4).Font.Color = corStatus
+    End If
+    ws.Cells(r, 1).IndentLevel = 1
+    ws.Rows(r).RowHeight = 18
+End Sub
+
 ' --------- CONFIG editavel (parametros centralizados na aba CONFIG) ---------
+' Parametros padrao da aba CONFIG: CHAVE | VALOR | DESCRICAO.
+Private Function CfgPadrao() As Collection
+    Dim c As Collection : Set c = New Collection
+    c.Add Array("TOL_ADERENCIA_PCT", 0.1, "Tolerancia de aderencia SAP x PRJ (fracao; 0,1 = 10%)")
+    c.Add Array("TOL_SUBVAL", 0.9, "UC subvalorizado: alerta se PU menor que fator x referencia")
+    c.Add Array("MIN_DIVERG_RS", 100, "Materialidade minima da divergencia em R$ p/ alertar")
+    c.Add Array("CABO_ISOLADO_MAX_M", 15, "Cabo isolado abaixo deste comprimento (m) fica isento de UC")
+    c.Add Array("CORTE_DIVERG_QTD", 20, "Destaca linhas com diferenca de qtd acima deste valor")
+    c.Add Array("PESO_REPROV", 40, "Ranking: peso de obra reprovada na SAP x PRJ")
+    c.Add Array("PESO_ALERTA", 4, "Ranking: peso por alerta critico")
+    c.Add Array("CAP_ALERTA", 24, "Ranking: teto da parcela de alertas")
+    c.Add Array("PESO_PU", 3, "Ranking: peso por divergencia de preco unitario")
+    c.Add Array("CAP_PU", 18, "Ranking: teto da parcela de PU")
+    c.Add Array("PESO_COM", 2, "Ranking: peso por COM fora do previsto NT.006")
+    c.Add Array("CAP_COM", 18, "Ranking: teto da parcela de COM")
+    c.Add Array("COM_CRITICO", "CH FUS; PARA RAIO", "Familias COM criticas (separadas por ;) que reprovam o PEP3")
+    c.Add Array("DIF_ABS_COND_NU", 5, "COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE")
+    c.Add Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE")
+    c.Add Array("DIF_ABS_FAMILIAS", "CABO ISOLADO; CABO COBRE; COND COBRE", "Familias (separadas por ;) que usam a regra DIF_ABS_CABO")
+    c.Add Array("PU_ODI_MIN", 0.01, "Alerta PU BAIXO EM ODI: preco unitario minimo da faixa (R$)")
+    c.Add Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)")
+    c.Add Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)")
+    c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
+    c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
+    c.Add Array("PRECOS_MAX_DIAS", 90, "Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO")
+    Set CfgPadrao = c
+End Function
+
 Private Sub GarantirConfig(wb As Workbook)
     Set mCfg = CreateObject("Scripting.Dictionary")
 
     ' Defaults: usados na criacao da aba E para acrescentar chaves novas
     ' em planilhas que ja tem a aba CONFIG de versao anterior do modulo.
-    Dim df As Variant
-    df = Array( _
-        Array("TOL_ADERENCIA_PCT", 0.1, "Tolerancia de aderencia SAP x PRJ (fracao; 0,1 = 10%)"), _
-        Array("TOL_SUBVAL", 0.9, "UC subvalorizado: alerta se PU menor que fator x referencia"), _
-        Array("MIN_DIVERG_RS", 100, "Materialidade minima da divergencia em R$ p/ alertar"), _
-        Array("CABO_ISOLADO_MAX_M", 15, "Cabo isolado abaixo deste comprimento (m) fica isento de UC"), _
-        Array("CORTE_DIVERG_QTD", 20, "Destaca linhas com diferenca de qtd acima deste valor"), _
-        Array("PESO_REPROV", 40, "Ranking: peso de obra reprovada na SAP x PRJ"), _
-        Array("PESO_ALERTA", 4, "Ranking: peso por alerta critico"), _
-        Array("CAP_ALERTA", 24, "Ranking: teto da parcela de alertas"), _
-        Array("PESO_PU", 3, "Ranking: peso por divergencia de preco unitario"), _
-        Array("CAP_PU", 18, "Ranking: teto da parcela de PU"), _
-        Array("PESO_COM", 2, "Ranking: peso por COM fora do previsto NT.006"), _
-        Array("CAP_COM", 18, "Ranking: teto da parcela de COM"), _
-        Array("COM_CRITICO", "CH FUS; PARA RAIO", "Familias COM criticas (separadas por ;) que reprovam o PEP3"), _
-        Array("DIF_ABS_COND_NU", 5, "COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE"), _
-        Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE"), _
-        Array("DIF_ABS_FAMILIAS", "CABO ISOLADO; CABO COBRE; COND COBRE", "Familias (separadas por ;) que usam a regra DIF_ABS_CABO") _
-    )
+    ' (montado por CfgPadrao, uma linha por parametro: o Array com "_" ja estava
+    ' em 22 das 24 continuacoes de linha que o VBA aceita numa instrucao)
+    Dim cl As Collection : Set cl = CfgPadrao()
+    Dim df() As Variant : ReDim df(0 To cl.Count - 1)
+    Dim jD As Long
+    For jD = 1 To cl.Count
+        df(jD - 1) = cl(jD)
+    Next jD
 
     Dim ws As Worksheet
     On Error Resume Next
@@ -3333,6 +4307,7 @@ Private Sub GarantirConfig(wb As Workbook)
 
     ' valores usados em hot path (evita reparse por chamada)
     mTolAder = CfgD("TOL_ADERENCIA_PCT", 0.1)
+    mOddValMin = CfgD("ODD_VALOR_MIN", -100)
     mCaboMax = CfgD("CABO_ISOLADO_MAX_M", 15)
     mDifCondNu = CfgD("DIF_ABS_COND_NU", 5)
     mDifAbsCabo = CfgD("DIF_ABS_CABO", 15)
@@ -3353,6 +4328,26 @@ Private Sub GarantirConfig(wb As Workbook)
         tk = Replace(NormStr(parts(r)), " ", "")
         If tk <> "" And Not mFamDifAbs.Exists(tk) Then mFamDifAbs.Add tk, True
     Next r
+
+    OcultarAba ws      ' aba de apoio: some das guias (Reexibir para editar)
+End Sub
+
+' Oculta uma aba de apoio (CONFIG, EQUIVALENCIAS). xlSheetHidden, e nao
+' VeryHidden: o usuario reexibe pelo clique direito numa guia > Reexibir para
+' editar, e a proxima execucao oculta de novo. A aba ativa so pode ser oculta
+' se outra estiver visivel: antes ativa a primeira aba visivel diferente dela.
+Private Sub OcultarAba(ws As Worksheet)
+    If ws Is Nothing Then Exit Sub
+    If ws.Visible <> xlSheetVisible Then Exit Sub
+    On Error Resume Next
+    If ws.Parent.ActiveSheet Is ws Then
+        Dim w As Worksheet
+        For Each w In ws.Parent.Worksheets
+            If w.Visible = xlSheetVisible And Not w Is ws Then w.Activate : Exit For
+        Next w
+    End If
+    ws.Visible = xlSheetHidden
+    On Error GoTo 0
 End Sub
 
 Private Function CfgS(chave As String, padrao As String) As String
@@ -3375,6 +4370,8 @@ End Function
 Private Sub LogInit()
     Set mLog = New Collection
     mFalhas = "" : mT0 = Timer
+    Set mEtapas = New Collection : mAvisosExec = ""
+    mFontePrecos = "" : mFontePrecosData = Empty : mFontePrecosRef = ""
     LogAdd "Inicio da execucao"
 End Sub
 
@@ -3409,21 +4406,891 @@ Private Sub GravarLog(wb As Workbook)
     On Error GoTo 0
 End Sub
 
+' --------- Materiais equivalentes (aba EQUIVALENCIAS) ---------
+' Codigos com o mesmo numero em EQUIVALENCIA sao intercambiaveis: na ANALISE
+' SAP x PRJ, quando 2+ codigos do grupo aparecem no mesmo PEP4, todos ficam
+' ADERENTE. Um codigo em dois grupos une os grupos (equivalencia transitiva).
+' A aba e mantida pelo usuario; a macro so acrescenta grupos de versoes novas
+' da lista padrao (EquivPadrao).
+' Layout (o da tabela da area, colunas localizadas pelo cabecalho):
+'   COD MAT | DESC MAT | UND | TIPO | FAMILIA | EQUIVALENCIA | PAR DE EQUIVALENCIA
+' So COD MAT e EQUIVALENCIA sao lidas; as demais sao informativas.
+
+' Lista padrao, uma linha por codigo:
+'   COD | DESC | UND | TIPO | FAMILIA | EQUIVALENCIA | VERSAO em que entrou
+' (Collection, e nao Array com "_": o VBA limita a 24 continuacoes de linha.)
+Private Function EquivPadrao() As Collection
+    Dim c As Collection : Set c = New Collection
+    ' versao 1
+    c.Add Split("105000058|CH SEC 1P VHI 15KV 630A 12,5KA RD PDE|UN|UC|CH SU FACA|1|1", "|")
+    c.Add Split("105000029|CH SEC BYPAS 1F 13,8KV 630A 16KA|UN|UC|CH SU FACA|1|1", "|")
+    c.Add Split("102210080|TP IND 15KV 1,2P75 500VA G1 EXT PDE|UN|UC|TP_TC|2|1", "|")
+    c.Add Split("102310194|TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO|UN|UC|TP_TC|2|1", "|")
+    c.Add Split("105010022|CH SEC 1P VHI 36,2KV 630A 12,5KA RD PDE|UN|UC|CH SU FACA|3|1", "|")
+    c.Add Split("105010003|CH SEC BYPAS 1P 34,5KV 630A 16KA|UN|UC|CH SU FACA|3|1", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|4|1", "|")
+    c.Add Split("102100387|TD,3P,13.8-0.38/0.22kV,112.5KVA,BLQ|UN|UC|TRAFO|4|1", "|")
+    c.Add Split("133000038|POSTE CONC DT B-1,5 12M 1000DAN PDE|UN|UC|POSTE RD|5|1", "|")
+    c.Add Split("133000150|POSTE DT CONC B AUTO ATER 12M 1000DAN|UN|UC|POSTE RD|5|1", "|")
+    ' versao 2 (o grupo 10 da tabela da area repete o 8 e ficou de fora; o 11
+    ' compartilha 102310194 com o 2 e e unido a ele na leitura)
+    c.Add Split("105310001|CHAVE FUS C POR/POL 34,5KV 100A 5KA PDE|UN|UC|CH FUS|6|2", "|")
+    c.Add Split("105310008|CHAVE FUS DT C POL 34,5KV 100A 5KA PDE|UN|UC|CH FUS|6|2", "|")
+    c.Add Split("102110399|TD,3P,34.5-0.38/0.22kV,112.5KVA,BLQ|UN|UC|TRAFO|7|2", "|")
+    c.Add Split("102110065|TRAFO DT 3F 34,5KV 112,5KVA 380/220V OV|UN|UC|TRAFO|7|2", "|")
+    c.Add Split("102100149|TRAFO DT 1F 13,8 FN 37,5KVA 440/220(M)OV|UN|UC|TRAFO|8|2", "|")
+    c.Add Split("102100175|TRAFO DT 1F 13,8KV FN 37,5KVA 220V OV|UN|UC|TRAFO|8|2", "|")
+    c.Add Split("102100160|TD 1F FN 13,8KV 10KVA 220V 3T OV PDE|UN|UC|TRAFO|9|2", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|9|2", "|")
+    c.Add Split("102310194|TP,13,8-11,4kV,EXT.GSCT004/21,EXC GO|UN|UC|TP_TC|11|2", "|")
+    c.Add Split("102210093|TP,17,5KV,USO EXTERNO,TIPO GSCT004/1,BLQ|UN|UC|TP_TC|11|2", "|")
+    c.Add Split("133000036|POSTE CONC DT B 12M 600DAN PDE|UN|UC|POSTE RD|12|2", "|")
+    c.Add Split("133000149|POSTE DT CONC B AUTO ATER 12M 600DAN|UN|UC|POSTE RD|12|2", "|")
+    ' versao 3 (13, 16, 17, 18 e 21 compartilham codigos com grupos anteriores
+    ' e sao unidos a eles na leitura: 9+16+18, 8+17, 6+21)
+    c.Add Split("102110402|TD,3P,34.5-0.38/0.22kV,75KVA,BLQ|UN|UC|TRAFO|13|3", "|")
+    c.Add Split("102110064|TRAFO DT 3F 34,5KV 75KVA 380/220V OV|UN|UC|TRAFO|13|3", "|")
+    c.Add Split("102110018|TRAFO DT 1F 34,5KV FN 10KVA 440/22(BLQ)|UN|UC|TRAFO|14|3", "|")
+    c.Add Split("102110181|TRAFO DT 1F 34,5KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|14|3", "|")
+    c.Add Split("104020017|PARA-RAIO DT POL 21KV 10KA 23,1KV PDE|UN|COM|PARA RAIO MT|15|3", "|")
+    c.Add Split("104010001|PARA-RAIOS DT POLIM 12KV 10KA 13,8KV|UN|COM|PARA RAIO MT|15|3", "|")
+    c.Add Split("102100021|TRAFO DT 1F 13,8KV FN 10KVA 440/22(BLQ)|UN|UC|TRAFO|16|3", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|16|3", "|")
+    c.Add Split("102100102|TRAFO DT 1F 13,8KV FN 37,5KVA 440/220(BQ|UN|UC|TRAFO|17|3", "|")
+    c.Add Split("102100149|TRAFO DT 1F 13,8 FN 37,5KVA 440/220(M)OV|UN|UC|TRAFO|17|3", "|")
+    c.Add Split("102100309|TD,1F,7,97-0,44/0,22kV,10KVA,4TAPs(DAN)|UN|UC|TRAFO|18|3", "|")
+    c.Add Split("102100163|TRAFO DT 1F 13,8KV FN 10KVA 440/220(M)OV|UN|UC|TRAFO|18|3", "|")
+    c.Add Split("102110020|TRAFO DT 1F 34,5KV FN 25KVA 440/220V(BQ)|UN|UC|TRAFO|19|3", "|")
+    c.Add Split("102110191|TRAFO DT 1F 34,5KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|19|3", "|")
+    c.Add Split("102100388|TD,3P,13.8-0.38/0.22kV,150KVA,GST01/606|UN|UC|TRAFO|20|3", "|")
+    c.Add Split("102100067|TRAFO DT 3F 13,8KV 150KVA 380/220V OV|UN|UC|TRAFO|20|3", "|")
+    c.Add Split("105310029|CH,FUS,36.2KV,100A,5KA,PORC,S.L,BLQ|UN|UC|CH FUS|21|3", "|")
+    c.Add Split("105310001|CHAVE FUS DT C POR 34,5KV 100A 5KA PDE|UN|UC|CH FUS|21|3", "|")
+    c.Add Split("122120026|CABO COB AL 150MM 15KV XLPE+HDPE+SMC|M|UC|COND PROT|22|3", "|")
+    c.Add Split("122120003|CABO COB AL CA 150MM2 15KV XLPE CZ (BLQ)|M|UC|COND PROT|22|3", "|")
+    ' versao 4 (o grupo 28 da tabela repete o 24 e ficou de fora; 23, 30, 31,
+    ' 32 e 33 compartilham codigos e sao unidos na leitura: 6+21+23, 25+30,
+    ' 4+32+33 e 31 com o par 105300003 = 105300005)
+    c.Add Split("105310005|CHAVE FUS C 34,5KV 200A 150KV SUP(BLQ)|UN|UC|CH FUS|23|4", "|")
+    c.Add Split("105310001|CHAVE FUS DT C POR 34,5KV 100A 5KA PDE|UN|UC|CH FUS|23|4", "|")
+    c.Add Split("105000007|CHAVE SEC 1P 15KV 400A 12,5KA MHI(BLQ)|UN|UC|CH SU FACA|24|4", "|")
+    c.Add Split("105000034|CHAV SEC 1F 15KV 400A MHI FC SL(BLQ)|UN|UC|CH SU FACA|24|4", "|")
+    c.Add Split("102100170|TRAFO DT 1F 13,8KV FN 25KVA 220V OV|UN|UC|TRAFO|25|4", "|")
+    c.Add Split("102100173|TRAFO DT 1F 13,8KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|25|4", "|")
+    c.Add Split("101100044|REL,FUSE-SAVER,1F,27KV,200A,NTE04701,BLQ|UN|UC|RELIGADOR|26|4", "|")
+    c.Add Split("101100027|RELIG 1F 24,2KV 100A 6,3KA S/CH PDE|UN|UC|RELIGADOR|26|4", "|")
+    c.Add Split("110010002|REGU TS 1F 19,92KV 201A 400KVA C/C(BLQ)|UN|UC|REGULADOR|27|4", "|")
+    c.Add Split("110010011|REGULAD TS 1F 19,92KV 201A 400KVA S/CONT|UN|UC|REGULADOR|27|4", "|")
+    c.Add Split("102100315|TD,1F,7,97-0,44/0,22kV,15KVA,4TAPs(DAN)|UN|UC|TRAFO|29|4", "|")
+    c.Add Split("102100168|TRAFO DT 1F 13,8KV FN 15KVA 440/220(M)OV|UN|UC|TRAFO|29|4", "|")
+    c.Add Split("102100337|TD,1P,7.97-0.44/0.22kV,25KVA,BLQ|UN|UC|TRAFO|30|4", "|")
+    c.Add Split("102100173|TRAFO DT 1F 13,8KV FN 25KVA 440/220(M)OV|UN|UC|TRAFO|30|4", "|")
+    c.Add Split("105310016|CHAVE FUS C ZCORR 23,1KV 100A 6,3KA PDE|UN|COM|CH FUS|31|4", "|")
+    c.Add Split("105300005|CHAVE FUS C 15KV 100A NBI 95KV 2KA(BLQ)|UN|COM|CH FUS|31|4", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|32|4", "|")
+    c.Add Split("102100062|TRAFO DT 3F 13,8KV 112,5KVA 220/127V OV|UN|UC|TRAFO|32|4", "|")
+    c.Add Split("102100350|TD,3F,13,8kV,380V,112KVA,4TAPs(DAN),BLQ|UN|UC|TRAFO|33|4", "|")
+    c.Add Split("102100066|TD 3F 13,8KV 112,5KVA OV 3T 380/220V PDE|UN|UC|TRAFO|33|4", "|")
+    c.Add Split("102110364|TD,1F,19,9-0,44/0,22kV,15KVA,4TAPs(DAN)|UN|UC|TRAFO|34|4", "|")
+    c.Add Split("102110363|TD,1F,19,9-0,44/0,22kV,15KVA,4TAPs FP|UN|UC|TRAFO|34|4", "|")
+    ' versao 1, renumerado depois: a tabela da area passou a usar o 6 (v2), o
+    ' 13 (v3) e o 23 (v4); fica depois do ultimo grupo dela
+    c.Add Split("105300003|||||35|1", "|")
+    c.Add Split("105300005|||||35|1", "|")
+    Set EquivPadrao = c
+End Function
+
+Private Sub GarantirEquivalencias(wb As Workbook)
+    Set mEquiv = CreateObject("Scripting.Dictionary")
+    Set mEquivLista = CreateObject("Scripting.Dictionary")
+
+    Dim padrao As Collection : Set padrao = EquivPadrao()
+    Dim it As Variant, maxPad As Long
+    Dim jaPadrao As Object : Set jaPadrao = CreateObject("Scripting.Dictionary")
+    For Each it In padrao
+        jaPadrao(CStr(it(0))) = True
+        If Val(it(5)) > maxPad Then maxPad = Val(it(5))
+    Next it
+
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets("EQUIVALENCIAS")
+    On Error GoTo 0
+    Dim ver As Long : ver = 0
+    On Error Resume Next
+    ver = CLng(Mid(wb.Names("EQUIV_VERSAO").RefersTo, 2))
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = "EQUIVALENCIAS"
+        EscreverEquivalencias ws, padrao
+    ElseIf NormStr(CStr(ws.Cells(1, 1).Value)) = "GRUPO" Then
+        ' Migracao unica do layout antigo (A = GRUPO, B = COD MAT, C = DESCRICAO):
+        ' a aba vira o layout novo com a lista padrao; linhas que o usuario tinha
+        ' acrescentado sao mantidas, renumeradas depois do ultimo grupo padrao
+        ' para nao se fundirem com eles.
+        Dim linhas As Collection : Set linhas = New Collection
+        For Each it In padrao
+            linhas.Add it
+        Next it
+        Dim novoGrp As Object : Set novoGrp = CreateObject("Scripting.Dictionary")
+        Dim prox As Long : prox = maxPad + 1
+        Dim lastO As Long : lastO = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+        Dim rO As Long, gOld As String, cOld As String, dOld As String
+        For rO = 2 To lastO
+            gOld = "" : cOld = "" : dOld = ""
+            If Not IsError(ws.Cells(rO, 1).Value) Then gOld = Trim(CStr(ws.Cells(rO, 1).Value))
+            If Not IsError(ws.Cells(rO, 2).Value) Then cOld = NormCod(ws.Cells(rO, 2).Value)
+            If Not IsError(ws.Cells(rO, 3).Value) Then dOld = Trim(CStr(ws.Cells(rO, 3).Value))
+            If gOld <> "" And cOld <> "" And Not jaPadrao.Exists(cOld) Then
+                If Not novoGrp.Exists(gOld) Then novoGrp.Add gOld, CStr(prox) : prox = prox + 1
+                linhas.Add Array(cOld, dOld, "", "", "", novoGrp(gOld), "0")
+            End If
+        Next rO
+        ws.Cells.Clear
+        EscreverEquivalencias ws, linhas
+        LogAdd "EQUIVALENCIAS: aba migrada para o layout novo (" & linhas.Count & " codigo(s))"
+    ElseIf ver < EQUIV_VERSAO_ATUAL Then
+        ' aba sem marcador = criada pela versao 1 da lista
+        AtualizarEquivalencias ws, padrao, IIf(ver = 0, 1, ver)
+    End If
+    On Error Resume Next
+    wb.Names.Add Name:="EQUIV_VERSAO", RefersTo:="=" & EQUIV_VERSAO_ATUAL, Visible:=False
+    On Error GoTo 0
+
+    OcultarAba ws      ' aba de apoio: some das guias (Reexibir para editar)
+
+    ' ---- leitura: colunas pelo cabecalho ----
+    Dim cCod As Long, cGrp As Long
+    ColunasEquiv ws, cCod, cGrp
+    If cCod = 0 Or cGrp = 0 Then
+        AvisoExec "EQUIVALENCIAS: cabecalho sem as colunas COD MAT e EQUIVALENCIA - " & _
+                  "nenhuma equivalencia aplicada"
+        Exit Sub
+    End If
+
+    ' Codigo em dois grupos une os grupos (union-find por numero de grupo):
+    ' 102310194 nos grupos 2 e 11 deixa os tres TPs equivalentes entre si.
+    Dim pai As Object : Set pai = CreateObject("Scripting.Dictionary")   ' grupo -> grupo pai
+    Dim codG As Object : Set codG = CreateObject("Scripting.Dictionary")  ' cod -> 1o grupo
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, cCod).End(xlUp).Row
+    Dim r As Long, grp As String, cod As String, ga As String, gb As String
+    For r = 2 To lastR
+        grp = "" : cod = ""
+        If Not IsError(ws.Cells(r, cGrp).Value) Then grp = Trim(CStr(ws.Cells(r, cGrp).Value))
+        If Not IsError(ws.Cells(r, cCod).Value) Then cod = NormCod(ws.Cells(r, cCod).Value)
+        If grp <> "" And cod <> "" Then
+            If Not pai.Exists(grp) Then pai.Add grp, grp
+            If codG.Exists(cod) Then
+                ga = RaizGrupo(pai, CStr(codG(cod))) : gb = RaizGrupo(pai, grp)
+                If ga <> gb Then
+                    pai(gb) = ga
+                    LogAdd "EQUIVALENCIAS: grupos " & ga & " e " & gb & " unidos (codigo " & cod & " nos dois)"
+                End If
+            Else
+                codG.Add cod, grp
+            End If
+        End If
+    Next r
+    Dim k As Variant, gR As String
+    For Each k In codG.Keys
+        gR = RaizGrupo(pai, CStr(codG(k)))
+        mEquiv.Add k, gR
+        If mEquivLista.Exists(gR) Then
+            mEquivLista(gR) = mEquivLista(gR) & " = " & k
+        Else
+            mEquivLista.Add gR, CStr(k)
+        End If
+    Next k
+    LogAdd "EQUIVALENCIAS: " & mEquiv.Count & " codigo(s) em " & mEquivLista.Count & " grupo(s)"
+End Sub
+
+' Grupo representante (raiz) no union-find de grupos de equivalencia.
+Private Function RaizGrupo(pai As Object, ByVal g As String) As String
+    Do While CStr(pai(g)) <> g
+        g = CStr(pai(g))
+    Loop
+    RaizGrupo = g
+End Function
+
+' Colunas COD MAT e EQUIVALENCIA da aba EQUIVALENCIAS (0 quando ausentes).
+Private Sub ColunasEquiv(ws As Worksheet, ByRef cCod As Long, ByRef cGrp As Long)
+    Dim c As Long, hN As String
+    cCod = 0 : cGrp = 0
+    For c = 1 To 20
+        If Not IsError(ws.Cells(1, c).Value) Then
+            hN = NormStr(CStr(ws.Cells(1, c).Value))
+            If hN = "COD MAT" And cCod = 0 Then cCod = c
+            If hN = "EQUIVALENCIA" And cGrp = 0 Then cGrp = c
+        End If
+    Next c
+End Sub
+
+' Acrescenta numa aba EQUIVALENCIAS ja existente os grupos da lista padrao de
+' versao mais nova que a da aba. Grupo com todos os codigos ja cadastrados e
+' pulado; numero de grupo ja usado por outros codigos vira o proximo livre.
+Private Sub AtualizarEquivalencias(ws As Worksheet, padrao As Collection, ByVal verAba As Long)
+    Dim cCod As Long, cGrp As Long
+    ColunasEquiv ws, cCod, cGrp
+    If cCod = 0 Or cGrp = 0 Then Exit Sub
+
+    ' o que a aba ja tem: codigos e codigos por grupo
+    Dim temCod As Object : Set temCod = CreateObject("Scripting.Dictionary")
+    Dim grpCods As Object : Set grpCods = CreateObject("Scripting.Dictionary")
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, cCod).End(xlUp).Row
+    Dim r As Long, g As String, cod As String, maxG As Long
+    For r = 2 To lastR
+        g = "" : cod = ""
+        If Not IsError(ws.Cells(r, cGrp).Value) Then g = Trim(CStr(ws.Cells(r, cGrp).Value))
+        If Not IsError(ws.Cells(r, cCod).Value) Then cod = NormCod(ws.Cells(r, cCod).Value)
+        If cod <> "" Then temCod(cod) = True
+        If g <> "" Then
+            If Not grpCods.Exists(g) Then grpCods.Add g, CreateObject("Scripting.Dictionary")
+            If cod <> "" Then grpCods(g).Item(cod) = True
+            If Val(g) > maxG Then maxG = Val(g)
+        End If
+    Next r
+
+    ' O par 105300003 = 105300005 muda de numero quando a tabela da area passa a
+    ' usar o dele (6 na v1, 13 na v2, 23 na v3). Se o grupo dele na aba ainda e exatamente
+    ' esse par e esta fora do numero atual da lista padrao, vai para esse numero
+    ' (ou para o proximo livre, se o usuario ja o usa).
+    Dim itP As Variant, gAlvo As String, gPar As Variant, gNovo As String
+    For Each itP In padrao
+        If CStr(itP(0)) = "105300003" Then gAlvo = CStr(itP(5))
+    Next itP
+    For Each gPar In grpCods.Keys
+        If CStr(gPar) <> gAlvo And grpCods(gPar).Count = 2 Then
+            If grpCods(gPar).Exists("105300003") And grpCods(gPar).Exists("105300005") Then
+                gNovo = gAlvo
+                If grpCods.Exists(gNovo) Then maxG = maxG + 1 : gNovo = CStr(maxG)
+                For r = 2 To lastR
+                    If Not IsError(ws.Cells(r, cGrp).Value) Then
+                        If Trim(CStr(ws.Cells(r, cGrp).Value)) = CStr(gPar) Then ws.Cells(r, cGrp).Value = CLng(gNovo)
+                    End If
+                Next r
+                grpCods.Add gNovo, grpCods(gPar)
+                grpCods.Remove gPar
+                If Val(gNovo) > maxG Then maxG = Val(gNovo)
+                LogAdd "EQUIVALENCIAS: par 105300003 = 105300005 movido do grupo " & gPar & " para o " & gNovo
+                Exit For
+            End If
+        End If
+    Next gPar
+
+    ' grupos novos (versao > aba), na ordem da lista padrao
+    Dim novos As Object : Set novos = CreateObject("Scripting.Dictionary")   ' grupo -> Collection
+    Dim it As Variant
+    For Each it In padrao
+        If CLng(it(6)) > verAba Then
+            If Not novos.Exists(CStr(it(5))) Then novos.Add CStr(it(5)), New Collection
+            novos(CStr(it(5))).Add it
+        End If
+    Next it
+
+    Dim gk As Variant, todos As Boolean, gDest As String, primeiro As Boolean, nAdd As Long
+    For Each gk In novos.Keys
+        todos = True
+        For Each it In novos(gk)
+            If Not temCod.Exists(CStr(it(0))) Then todos = False
+        Next it
+        If todos Then
+            LogAdd "EQUIVALENCIAS: grupo padrao " & gk & " ja cadastrado - pulado"
+        Else
+            gDest = CStr(gk)
+            If grpCods.Exists(gDest) Then
+                maxG = maxG + 1 : gDest = CStr(maxG)
+                LogAdd "EQUIVALENCIAS: grupo padrao " & gk & " ja usado na aba - gravado como " & gDest
+            End If
+            If Val(gDest) > maxG Then maxG = Val(gDest)
+            grpCods.Add gDest, CreateObject("Scripting.Dictionary")
+            primeiro = True
+            For Each it In novos(gk)
+                lastR = lastR + 1
+                EscreverLinhaEquiv ws, lastR, it, gDest, primeiro
+                primeiro = False
+                temCod(CStr(it(0))) = True
+                nAdd = nAdd + 1
+            Next it
+        End If
+    Next gk
+    LogAdd "EQUIVALENCIAS: lista padrao v" & verAba & " -> v" & EQUIV_VERSAO_ATUAL & _
+           ", " & nAdd & " codigo(s) acrescentado(s)"
+End Sub
+
+' Escreve a aba EQUIVALENCIAS no layout da tabela da area. linhas: cada item e
+' (COD, DESC, UND, TIPO, FAMILIA, EQUIVALENCIA, VERSAO); "PAR" marca a 1a
+' linha de cada grupo, como na tabela de origem.
+Private Sub EscreverEquivalencias(ws As Worksheet, linhas As Collection)
+    Dim h As Variant
+    h = Array("COD MAT", "DESC MAT", "UND", "TIPO", "FAMILIA", "EQUIVALENCIA", "PAR DE EQUIVALENCIA")
+    Dim c As Long
+    For c = 1 To 7
+        ws.Cells(1, c).Value = h(c - 1)
+    Next c
+    With ws.Range("A1:G1")
+        .Font.Bold = True : .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(17, 24, 39) : .HorizontalAlignment = xlCenter
+    End With
+    Dim r As Long : r = 1
+    Dim it As Variant, grpAnt As String
+    For Each it In linhas
+        r = r + 1
+        EscreverLinhaEquiv ws, r, it, CStr(it(5)), (CStr(it(5)) <> grpAnt)
+        grpAnt = CStr(it(5))
+    Next it
+    ws.Cells(1, 9).Value = "Codigos com o mesmo numero em EQUIVALENCIA sao equivalentes: na ANALISE " & _
+        "SAP x PRJ, quando 2+ codigos do grupo aparecem no mesmo PEP4, todos ficam ADERENTE."
+    ws.Cells(1, 9).Font.Italic = True : ws.Cells(1, 9).Font.Color = RGB(110, 118, 130)
+    ws.Columns(1).ColumnWidth = 13 : ws.Columns(2).ColumnWidth = 44
+    ws.Columns(3).ColumnWidth = 6 : ws.Columns(4).ColumnWidth = 6
+    ws.Columns(5).ColumnWidth = 14 : ws.Columns(6).ColumnWidth = 14
+    ws.Columns(7).ColumnWidth = 22
+    ws.Tab.Color = RGB(90, 90, 90)
+End Sub
+
+' Uma linha da aba EQUIVALENCIAS (codigo como texto, sem notacao cientifica).
+Private Sub EscreverLinhaEquiv(ws As Worksheet, ByVal r As Long, it As Variant, _
+                               ByVal grp As String, ByVal marcaPar As Boolean)
+    Dim c As Long
+    ws.Cells(r, 1).NumberFormat = "@"
+    ws.Cells(r, 1).Value = CStr(it(0))
+    For c = 1 To 4
+        ws.Cells(r, c + 1).Value = it(c)
+    Next c
+    If IsNumeric(grp) Then ws.Cells(r, 6).Value = CLng(grp) Else ws.Cells(r, 6).Value = grp
+    If marcaPar Then ws.Cells(r, 7).Value = "PAR"
+    ws.Range(ws.Cells(r, 6), ws.Cells(r, 7)).HorizontalAlignment = xlCenter
+End Sub
+
+' Chave "PEP4|GRUPO" da linha da base quando o material esta em um grupo de
+' equivalentes; "" quando nao esta (ou falta PEP4 / COD MAT).
+Private Function ChaveEquiv(baseData As Variant, ByVal i As Long, _
+                            ByVal cP4 As Long, ByVal cCod As Long) As String
+    If mEquiv Is Nothing Then Exit Function
+    If mEquiv.Count = 0 Or cP4 = 0 Or cCod = 0 Then Exit Function
+    If IsError(baseData(i, cCod)) Or IsError(baseData(i, cP4)) Then Exit Function
+    Dim cod As String : cod = NormCod(baseData(i, cCod))
+    If cod = "" Then Exit Function
+    If Not mEquiv.Exists(cod) Then Exit Function
+    Dim p4 As String : p4 = NormStr(CStr(baseData(i, cP4)))
+    If p4 = "" Then Exit Function
+    ChaveEquiv = p4 & "|" & mEquiv(cod)
+End Function
+
+' SIT MAT de um grupo de EQUIVALENTES no PEP4, pela quantidade TOTAL: exige o
+' MESMO numero no SAP e no PRJ, sem tolerancia. SAP 3 num codigo e PRJ 9 no
+' outro = NAO ADERENTE; SAP 9 x PRJ 10 tambem (a tolerancia de 10% das demais
+' linhas nao vale para equivalentes); SAP 9 x PRJ 9 = ADERENTE.
+Private Function SitPorQuantidade(ByVal libV As Variant, ByVal prjV As Variant) As String
+    SitPorQuantidade = IIf(Abs(Val0(libV) - Val0(prjV)) < 0.000001, "ADERENTE", "NAO ADERENTE")
+End Function
+
+' Aplica a regra do mesmo numero depois de AvaliarLinha: familias de cabo /
+' condutor / ramal sao avaliadas por diferenca absoluta ou % (EhAderente) e
+' ignorariam a SIT MAT recalculada. UC zerado e regras de OD prevalecem.
+Private Sub AjustarAderEquiv(av As tAvalLinha, ByVal libT As Variant, ByVal prjT As Variant)
+    If av.UcZerado Or av.ViolaOD Then Exit Sub
+    av.EhAder = (SitPorQuantidade(libT, prjT) = "ADERENTE")
+    av.ReprovaLinha = Not av.EhAder
+End Sub
+
+' "105000058 CH SEC 1P VHI ... = 105000029 CH SEC BYPAS ...": os codigos do
+' grupo presentes no PEP4, cada um com a propria descricao da base.
+Private Function TextoEquiv(d As Object) As String
+    Dim k As Variant, t As String
+    For Each k In d.Keys
+        t = t & IIf(t <> "", " = ", "") & CStr(k)
+        If CStr(d(k)) <> "" Then t = t & " " & CStr(d(k))
+    Next k
+    TextoEquiv = t
+End Function
+
+' ===========================================================================
+'  CARREGAR BASES: importa as extracoes de analise de carga e roda a analise
+' ===========================================================================
+
+' Macro de entrada (Alt+F8 > CarregarBases, ou num botao). Escolhe um ou mais
+' arquivos de base (xlsx/xlsm/xls/xlsb/csv), traz os dados para a aba de base
+' deste arquivo e roda GerarInventario. Com varios arquivos pergunta:
+'   SIM = JUNTAR: uma analise com todas as bases (coluna ARQUIVO ORIGEM)
+'   NAO = SEPARAR: uma analise por base, cada uma salva ao lado do arquivo
+'         como "ANALISE INVENTARIO - <base>.xlsx", com resumo no final
+' Fluxo: LER (so leitura) -> PREVIA (nada alterado; OK/Cancelar) -> GRAVAR.
+Public Sub CarregarBases()
+    Dim wbDest As Workbook : Set wbDest = ActiveWorkbook
+
+    Dim fd As Object : Set fd = Application.FileDialog(3)    ' 3 = msoFileDialogFilePicker
+    With fd
+        .Title = "Selecione a(s) base(s) de analise de inventario"
+        .AllowMultiSelect = True
+        .Filters.Clear
+        .Filters.Add "Bases de inventario (Excel / CSV)", "*.xlsx;*.xlsm;*.xls;*.xlsb;*.csv"
+        If .Show <> -1 Then Exit Sub
+    End With
+    Dim arqs As Collection : Set arqs = New Collection
+    Dim it As Variant
+    For Each it In fd.SelectedItems
+        If LCase(CStr(it)) <> LCase(wbDest.FullName) Then arqs.Add CStr(it)
+    Next it
+    If arqs.Count = 0 Then
+        MsgBox "Nenhum arquivo de base selecionado (o proprio arquivo de analise nao conta).", _
+               vbExclamation, "Carregar bases"
+        Exit Sub
+    End If
+
+    Dim juntar As Boolean : juntar = True
+    If arqs.Count > 1 Then
+        Select Case MsgBox(arqs.Count & " bases selecionadas." & vbCrLf & vbCrLf & _
+                "SIM = JUNTAR todas numa unica analise" & vbCrLf & _
+                "NAO = SEPARAR: uma analise por base, salva ao lado de cada arquivo" & vbCrLf & vbCrLf & _
+                "Antes de alterar qualquer coisa aparece uma previa da carga.", _
+                vbYesNoCancel + vbQuestion, "Carregar bases")
+            Case vbYes: juntar = True
+            Case vbNo: juntar = False
+            Case Else: Exit Sub
+        End Select
+    End If
+
+    ' 1) LER: so leitura, nada muda neste arquivo
+    Dim msgL As String
+    Dim blocos As Collection : Set blocos = LerBases(arqs, msgL)
+    If blocos.Count = 0 Then
+        MsgBox "Nenhuma base foi lida:" & msgL, vbExclamation, "Carregar bases"
+        Exit Sub
+    End If
+
+    ' 2) PREVIA (dry-run): o que vai entrar, por arquivo, antes de substituir a base
+    If MsgBox(PreviaCarga(wbDest, blocos, msgL, juntar), vbOKCancel + vbQuestion, _
+              "Carregar bases - previa") <> vbOK Then Exit Sub
+
+    ' 3) GRAVAR e analisar
+    If juntar Then
+        Dim nLin As Long
+        If Not GravarBase(wbDest, blocos, nLin) Then
+            MsgBox "Falha ao gravar a base neste arquivo.", vbCritical, "Carregar bases"
+            Exit Sub
+        End If
+        wbDest.Activate
+        GerarInventario
+    Else
+        ProcessarLoteSeparado wbDest, blocos, msgL
+    End If
+End Sub
+
+' Modo SEPARAR: para cada base ja lida, grava, roda GerarInventario em modo lote
+' e exporta o resultado; no fim, um resumo com o que deu certo e o que falhou.
+Private Sub ProcessarLoteSeparado(wbDest As Workbook, blocos As Collection, ByVal msgLeitura As String)
+    Dim bl As Variant, um As Collection, resumo As String, nOk As Long
+    Dim nL As Long, destino As String
+    mModoLote = True
+    On Error GoTo Falha
+    For Each bl In blocos
+        Set um = New Collection : um.Add bl
+        nL = 0
+        If GravarBase(wbDest, um, nL) Then
+            wbDest.Activate
+            GerarInventario
+            If mUltimoOk Then
+                destino = ExportarResultado(wbDest, CStr(bl(3)))
+                resumo = resumo & vbCrLf & "  OK    " & bl(1) & "  ->  " & NomeArquivo(destino) & _
+                         IIf(mFalhas <> "", "  (com avisos - ver SAUDE DA EXECUCAO no painel)", "")
+                nOk = nOk + 1
+            Else
+                resumo = resumo & vbCrLf & "  ERRO  " & bl(1) & ": " & Replace(mAvisoLote, vbCrLf, " ")
+            End If
+        Else
+            resumo = resumo & vbCrLf & "  ERRO  " & bl(1) & ": falha ao gravar a base"
+        End If
+    Next bl
+    mModoLote = False
+    If msgLeitura <> "" Then resumo = resumo & vbCrLf & vbCrLf & "Nao lidos:" & msgLeitura
+    MsgBox nOk & " de " & blocos.Count & " base(s) analisada(s)." & vbCrLf & resumo, _
+           IIf(nOk = blocos.Count And msgLeitura = "", vbInformation, vbExclamation), "Carregar bases"
+    Exit Sub
+Falha:
+    mModoLote = False
+    Application.ScreenUpdating = True : Application.EnableEvents = True
+    Application.DisplayAlerts = True : Application.Calculation = xlCalculationAutomatic
+    MsgBox "Erro " & Err.Number & " na carga em lote: " & Err.Description & vbCrLf & vbCrLf & _
+           "Processadas ate aqui:" & resumo, vbCritical, "Carregar bases"
+End Sub
+
+' LER: abre cada arquivo so para leitura (sem eventos), acha a aba da base e
+' le a tabela. Cada base valida vira Array(dados, nome do arquivo, nome da aba,
+' caminho). msg recebe o que nao deu para ler. Nada muda neste arquivo.
+Private Function LerBases(arqs As Collection, ByRef msg As String) As Collection
+    Dim blocos As Collection : Set blocos = New Collection
+    Dim it As Variant, wbS As Workbook, wsS As Worksheet, jaAberto As Boolean
+    Dim d As Variant, nomeA As String
+    Dim evOld As Boolean : evOld = Application.EnableEvents
+    On Error GoTo Falha
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False        ' sem macros de abertura dos arquivos de base
+
+    For Each it In arqs
+        nomeA = NomeArquivo(CStr(it))
+        ' ja aberto (mesmo caminho): usa e NAO fecha; senao abre so para leitura
+        Set wbS = Nothing : jaAberto = False
+        On Error Resume Next
+        Set wbS = Workbooks(nomeA)
+        On Error GoTo Falha
+        If Not wbS Is Nothing Then
+            If LCase(wbS.FullName) = LCase(CStr(it)) Then jaAberto = True Else Set wbS = Nothing
+        End If
+        If wbS Is Nothing Then
+            On Error Resume Next
+            If LCase(Right(CStr(it), 4)) = ".csv" Then
+                Set wbS = Workbooks.Open(CStr(it), ReadOnly:=True, Local:=True)   ' ; e virgula decimal
+            Else
+                Set wbS = Workbooks.Open(CStr(it), ReadOnly:=True, UpdateLinks:=0)
+            End If
+            On Error GoTo Falha
+        End If
+
+        If wbS Is Nothing Then
+            msg = msg & vbCrLf & "  - " & nomeA & ": nao foi possivel abrir"
+        Else
+            Set wsS = AcharBaseInventario(wbS)
+            If wsS Is Nothing Then
+                msg = msg & vbCrLf & "  - " & nomeA & ": sem as colunas MAT LIB SAP / ATENDIDO SAP e " & _
+                      "MAT PRJ CAD / TOMBADO PROJ"
+            Else
+                d = LerTabela(wsS)
+                If IsEmpty(d) Then
+                    msg = msg & vbCrLf & "  - " & nomeA & ": aba '" & wsS.Name & "' sem linhas de dados"
+                Else
+                    blocos.Add Array(d, nomeA, wsS.Name, CStr(it))
+                End If
+            End If
+            If Not jaAberto Then wbS.Close SaveChanges:=False
+        End If
+    Next it
+    Application.EnableEvents = evOld
+    Set LerBases = blocos
+    Exit Function
+Falha:
+    Application.EnableEvents = evOld
+    msg = msg & vbCrLf & "  - erro " & Err.Number & " na leitura: " & Err.Description
+    Set LerBases = blocos
+End Function
+
+' Colunas de destino: o cabecalho do 1o bloco, sem ARQUIVO ORIGEM (que vai
+' sempre no fim) e sem coluna de cabecalho vazio.
+Private Sub CabecalhoDestino(blocos As Collection, ByRef hdr() As String, ByRef nCol As Long)
+    Dim b1 As Variant : b1 = blocos(1)
+    Dim d As Variant : d = b1(0)
+    Dim c As Long
+    nCol = 0
+    ReDim hdr(1 To UBound(d, 2))
+    For c = 1 To UBound(d, 2)
+        If Not IsError(d(1, c)) Then
+            If Trim(CStr(d(1, c))) <> "" And NormStr(CStr(d(1, c))) <> "ARQUIVO ORIGEM" Then
+                nCol = nCol + 1 : hdr(nCol) = Trim(CStr(d(1, c)))
+            End If
+        End If
+    Next c
+End Sub
+
+' Casa as colunas de um bloco com o cabecalho de destino, por NOME (com os
+' aliases antigos/novos): src(c) = coluna no bloco, 0 = ausente. faltam recebe
+' os nomes ausentes, separados por virgula.
+Private Function MapearBloco(d As Variant, hdr() As String, ByVal nCol As Long, _
+                             ByRef faltam As String) As Long()
+    Dim c As Long, k As String
+    Dim hS() As Variant : ReDim hS(1 To 1, 1 To UBound(d, 2))
+    For c = 1 To UBound(d, 2)
+        hS(1, c) = d(1, c)
+    Next c
+    Dim mS As Object : Set mS = MapaDeCabecalho(hS)
+    Dim src() As Long : ReDim src(1 To nCol)
+    faltam = ""
+    For c = 1 To nCol
+        k = NormStr(hdr(c))
+        If mS.Exists(k) Then
+            src(c) = mS(k)
+        ElseIf mS.Exists(CanonicoBase(k)) Then
+            src(c) = mS(CanonicoBase(k))
+        Else
+            faltam = faltam & IIf(faltam <> "", ", ", "") & hdr(c)
+        End If
+    Next c
+    MapearBloco = src
+End Function
+
+' PREVIA (dry-run): texto com o que a carga vai fazer - linhas por arquivo,
+' colunas ausentes (modo juntar), arquivos nao lidos e a aba que sera
+' substituida. Nao altera nada. Limitado a 8 arquivos para caber na MsgBox.
+Private Function PreviaCarga(wbDest As Workbook, blocos As Collection, _
+                             ByVal msgL As String, ByVal juntar As Boolean) As String
+    Dim t As String, hdr() As String, nCol As Long, src() As Long, faltam As String
+    Dim bl As Variant, nArq As Long, nTot As Long, nLinB As Long
+    CabecalhoDestino blocos, hdr, nCol
+    t = "PREVIA DA CARGA - nada foi alterado ainda" & vbCrLf & vbCrLf
+    For Each bl In blocos
+        nArq = nArq + 1
+        nLinB = UBound(bl(0), 1) - 1
+        nTot = nTot + nLinB
+        If nArq <= 8 Then
+            t = t & "- " & bl(1) & "  [aba '" & bl(2) & "']: " & Format(nLinB, "#,##0") & " linha(s)" & vbCrLf
+            If juntar Then
+                src = MapearBloco(bl(0), hdr, nCol, faltam)
+                If faltam <> "" Then
+                    If Len(faltam) > 90 Then faltam = Left(faltam, 87) & "..."
+                    t = t & "      sem: " & faltam & " (fica vazia)" & vbCrLf
+                End If
+            End If
+        End If
+    Next bl
+    If nArq > 8 Then t = t & "... e mais " & (nArq - 8) & " arquivo(s)" & vbCrLf
+    If msgL <> "" Then
+        If Len(msgL) > 300 Then msgL = Left(msgL, 297) & "..."
+        t = t & vbCrLf & "NAO serao carregados:" & msgL & vbCrLf
+    End If
+    If juntar Then
+        t = t & vbCrLf & "Total: " & Format(nTot, "#,##0") & " linha(s) numa unica analise"
+    Else
+        t = t & vbCrLf & nArq & " analise(s) separada(s), salvas ao lado de cada arquivo"
+    End If
+    Dim wsAt As Worksheet : Set wsAt = AcharBaseInventario(wbDest)
+    If Not wsAt Is Nothing Then t = t & vbCrLf & "A aba de base atual '" & wsAt.Name & "' sera SUBSTITUIDA."
+    t = t & vbCrLf & vbCrLf & "OK = carregar e analisar     Cancelar = nao altera nada"
+    PreviaCarga = t
+End Function
+
+' GRAVAR: junta os blocos (colunas casadas por nome) e grava na aba de base
+' deste arquivo (a que AcharBaseInventario encontra; sem ela, cria "BASE
+' INVENTARIO"). Ultima coluna: ARQUIVO ORIGEM.
+Private Function GravarBase(wbDest As Workbook, blocos As Collection, ByRef nLin As Long) As Boolean
+    Dim hdr() As String, nCol As Long, c As Long
+    On Error GoTo Falha
+    CabecalhoDestino blocos, hdr, nCol
+    If nCol = 0 Then Exit Function
+    Dim bl As Variant
+    nLin = 0
+    For Each bl In blocos
+        nLin = nLin + UBound(bl(0), 1) - 1
+    Next bl
+
+    Dim outD() As Variant : ReDim outD(1 To nLin + 1, 1 To nCol + 1)
+    For c = 1 To nCol
+        outD(1, c) = hdr(c)
+    Next c
+    outD(1, nCol + 1) = "ARQUIVO ORIGEM"
+    Dim d As Variant, src() As Long, faltam As String, cOrig As Long
+    Dim r As Long, rOut As Long, hO() As Variant, mO As Object
+    rOut = 1
+    For Each bl In blocos
+        d = bl(0)
+        src = MapearBloco(d, hdr, nCol, faltam)
+        ' base que ja veio de uma juncao anterior mantem a origem dela
+        ReDim hO(1 To 1, 1 To UBound(d, 2))
+        For c = 1 To UBound(d, 2)
+            hO(1, c) = d(1, c)
+        Next c
+        Set mO = MapaDeCabecalho(hO)
+        cOrig = 0 : If mO.Exists("ARQUIVO ORIGEM") Then cOrig = mO("ARQUIVO ORIGEM")
+        For r = 2 To UBound(d, 1)
+            rOut = rOut + 1
+            For c = 1 To nCol
+                If src(c) > 0 Then outD(rOut, c) = d(r, src(c))
+            Next c
+            outD(rOut, nCol + 1) = bl(1)
+            If cOrig > 0 Then
+                If Not IsError(d(r, cOrig)) Then
+                    If Trim(CStr(d(r, cOrig))) <> "" Then outD(rOut, nCol + 1) = d(r, cOrig)
+                End If
+            End If
+        Next r
+    Next bl
+
+    Dim wsB As Worksheet : Set wsB = AcharBaseInventario(wbDest)
+    If wsB Is Nothing Then
+        On Error Resume Next
+        Set wsB = wbDest.Worksheets("BASE INVENTARIO")
+        On Error GoTo Falha
+        If wsB Is Nothing Then
+            Set wsB = wbDest.Worksheets.Add(Before:=wbDest.Worksheets(1))
+            wsB.Name = "BASE INVENTARIO"
+        End If
+    End If
+    If wsB.AutoFilterMode Then wsB.AutoFilterMode = False
+    wsB.Cells.Clear
+    wsB.Range(wsB.Cells(1, 1), wsB.Cells(nLin + 1, nCol + 1)).Value = outD
+    wsB.Rows(1).Font.Bold = True
+    wsB.Range(wsB.Columns(1), wsB.Columns(nCol + 1)).ColumnWidth = 14
+    GravarBase = True
+    Exit Function
+Falha:
+    GravarBase = False
+End Function
+
+' Tabela da aba (linha 1 = cabecalho) como array 2D; Empty sem linhas de dados.
+' Find com xlFormulas acha a ultima celula mesmo em linhas ocultas por filtro.
+Private Function LerTabela(ws As Worksheet) As Variant
+    Dim uR As Range, uC As Range
+    Set uR = ws.Cells.Find("*", , xlFormulas, xlPart, xlByRows, xlPrevious)
+    Set uC = ws.Cells.Find("*", , xlFormulas, xlPart, xlByColumns, xlPrevious)
+    If uR Is Nothing Or uC Is Nothing Then Exit Function
+    If uR.Row < 2 Or uC.Column < 2 Then Exit Function
+    LerTabela = ws.Range(ws.Cells(1, 1), ws.Cells(uR.Row, uC.Column)).Value
+End Function
+
+' Copia as abas de resultado para um arquivo novo, salvo ao lado da base:
+' "<pasta da base>\ANALISE INVENTARIO - <nome da base>.xlsx" (sobrescreve).
+Private Function ExportarResultado(wb As Workbook, ByVal arqBase As String) As String
+    Dim nomes As Variant
+    nomes = Array("PAINEL DO GESTOR", "ANALISE SAP x PRJ", "RESUMO SAP x PRJ", "RACIONALIZACAO COM", _
+                  "PRECO UNITARIO", "ALERTA CRITICO", "RANKING DE RISCO", "DIAGNOSTICO BASE")
+    Dim tem() As String, n As Long, i As Long, ws As Worksheet
+    ReDim tem(0 To UBound(nomes))
+    For i = 0 To UBound(nomes)
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = wb.Worksheets(CStr(nomes(i)))
+        On Error GoTo 0
+        If Not ws Is Nothing Then tem(n) = CStr(nomes(i)) : n = n + 1
+    Next i
+    If n = 0 Then Exit Function
+    ReDim Preserve tem(0 To n - 1)
+
+    wb.Worksheets(tem).Copy                  ' cria um arquivo novo (ativo) com as abas
+    Dim wbN As Workbook : Set wbN = ActiveWorkbook
+    Dim pasta As String : pasta = Left(arqBase, Len(arqBase) - Len(NomeArquivo(arqBase)))
+    Dim base As String : base = NomeArquivo(arqBase)
+    If InStrRev(base, ".") > 0 Then base = Left(base, InStrRev(base, ".") - 1)
+    Dim destino As String : destino = pasta & "ANALISE INVENTARIO - " & base & ".xlsx"
+    Application.DisplayAlerts = False
+    wbN.SaveAs destino, 51                   ' 51 = xlOpenXMLWorkbook (.xlsx)
+    Application.DisplayAlerts = True
+    wbN.Close SaveChanges:=False
+    wb.Activate
+    ExportarResultado = destino
+End Function
+
+' Nome do arquivo de um caminho completo (aceita \ e /).
+Private Function NomeArquivo(ByVal caminho As String) As String
+    Dim p As Long : p = InStrRev(caminho, "\")
+    If InStrRev(caminho, "/") > p Then p = InStrRev(caminho, "/")
+    NomeArquivo = Mid(caminho, p + 1)
+End Function
+
+' --------- Mapa de colunas da base: fonte UNICA do "onde esta cada coluna" ---------
+' Devolve um dicionario NOME NORMALIZADO -> indice da coluna, lendo a linha de
+' cabecalho em UM unico acesso a planilha. Antes, cada procedure repetia o seu
+' proprio "For c = 1 To lastC / Select Case", com nomes de variavel diferentes:
+' renomear uma coluna na extracao obrigava a editar todos os pontos.
+' Cabecalho repetido: vence a primeira ocorrencia.
+Private Function MapaColunas(wsBase As Worksheet) As Object
+    Dim lastC As Long
+    lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
+    Dim hd As Variant
+    If lastC = 1 Then
+        ReDim hd(1 To 1, 1 To 1)
+        hd(1, 1) = wsBase.Cells(1, 1).Value
+    Else
+        hd = wsBase.Range(wsBase.Cells(1, 1), wsBase.Cells(1, lastC)).Value
+    End If
+    Set MapaColunas = MapaDeCabecalho(hd)
+End Function
+
+' Mapa NOME NORMALIZADO -> coluna a partir da 1a linha de um array 2D (o
+' cabecalho lido de uma aba), ja com os aliases. Base de MapaColunas e da
+' carga de bases (CarregarBases), que casa colunas de arquivos diferentes.
+Private Function MapaDeCabecalho(ByVal hd As Variant) As Object
+    Dim m As Object : Set m = CreateObject("Scripting.Dictionary")
+    Dim c As Long, h As String
+    For c = 1 To UBound(hd, 2)
+        h = ""
+        If Not IsError(hd(1, c)) Then h = NormStr(CStr(hd(1, c)))
+        If h <> "" And Not m.Exists(h) Then m.Add h, c
+    Next c
+    AplicarAliasesBase m
+    Set MapaDeCabecalho = m
+End Function
+
+' Nome canonico de um cabecalho ja normalizado ("ATENDIDO SAP" -> "MAT LIB SAP");
+' nome sem alias volta igual.
+Private Function CanonicoBase(ByVal hNorm As String) As String
+    CanonicoBase = hNorm
+    Dim al As Variant, p() As String, alts() As String, k As Long
+    For Each al In AliasesBase()
+        p = Split(CStr(al), "=")
+        alts = Split(p(1), "|")
+        For k = 0 To UBound(alts)
+            If NormStr(alts(k)) = hNorm Then
+                CanonicoBase = p(0)
+                Exit Function
+            End If
+        Next k
+    Next al
+End Function
+
+' Nomes de cabecalho aceitos na base alem do nome CANONICO usado pelo codigo.
+' Formato "CANONICO=ALIAS1|ALIAS2", com os aliases escritos como aparecem na
+' planilha (NormStr e aplicado na comparacao: "_" e acentos nao importam).
+' O layout novo da extracao renomeou 7 colunas; o antigo continua aceito.
+Private Function AliasesBase() As Variant
+    AliasesBase = Array( _
+        "COD MAT=MATERIAL", _
+        "DESC MAT=DESC_MATERIAL", _
+        "UND=UNIDADE", _
+        "CLASSE=CLASSE_CUSTO", _
+        "MAT LIB SAP=ATENDIDO SAP", _
+        "MAT PRJ CAD=TOMBADO PROJ", _
+        "SIT MAT=SITUACAO_DO_MATERIAL")
+End Function
+
+' Completa o mapa de colunas com os nomes canonicos: se a base nao tem o
+' canonico mas tem um alias, o canonico aponta para a coluna do alias. Assim
+' todo o modulo segue usando ColIdx(mapa, "MAT LIB SAP") com qualquer layout.
+' Se a base tiver os dois nomes, vale o canonico.
+Private Sub AplicarAliasesBase(m As Object)
+    Dim al As Variant, p() As String, alts() As String, k As Long, a As String
+    For Each al In AliasesBase()
+        p = Split(CStr(al), "=")
+        If Not m.Exists(p(0)) Then
+            alts = Split(p(1), "|")
+            For k = 0 To UBound(alts)
+                a = NormStr(alts(k))
+                If m.Exists(a) Then m.Add p(0), m(a) : Exit For
+            Next k
+        End If
+    Next al
+End Sub
+
+' Nome da coluna para mensagens ao usuario: "MAT LIB SAP (ou ATENDIDO SAP)".
+Private Function NomeColunaBase(ByVal canonico As String) As String
+    NomeColunaBase = canonico
+    Dim al As Variant, p() As String
+    For Each al In AliasesBase()
+        p = Split(CStr(al), "=")
+        If p(0) = canonico Then
+            NomeColunaBase = canonico & " (ou " & Replace(p(1), "|", " / ") & ")"
+            Exit Function
+        End If
+    Next al
+End Function
+
+' Indice da coluna pelo nome; 0 quando a coluna nao existe na base (os chamadores
+' ja tratam 0 como "coluna ausente").
+Private Function ColIdx(mapa As Object, nome As String) As Long
+    If mapa Is Nothing Then Exit Function
+    If mapa.Exists(nome) Then ColIdx = mapa(nome)
+End Function
+
 ' --------- Validacao da base: lista todas as colunas obrigatorias ausentes ---------
 Private Function ValidarBase(wsBase As Worksheet) As String
     Dim req As Variant
     req = Array("PEP3NIVEL", "PEP4NIVEL", "COD MAT", "VALOR", "FAMILIA", "TIPO", _
                 "SIT MAT", "MAT LIB SAP", "MAT PRJ CAD")
-    Dim have As Object : Set have = CreateObject("Scripting.Dictionary")
-    Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
-    Dim c As Long, h As String
-    For c = 1 To lastC
-        h = NormStr(CStr(wsBase.Cells(1, c).Value))
-        If h <> "" And Not have.Exists(h) Then have.Add h, True
-    Next c
+    Dim have As Object : Set have = MapaColunas(wsBase)
     Dim falta As String, i As Long
     For i = 0 To UBound(req)
-        If Not have.Exists(CStr(req(i))) Then falta = falta & IIf(falta <> "", ", ", "") & req(i)
+        If Not have.Exists(CStr(req(i))) Then
+            falta = falta & IIf(falta <> "", ", ", "") & NomeColunaBase(CStr(req(i)))
+        End If
     Next i
     ValidarBase = falta
 End Function
@@ -3655,22 +5522,18 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim iPep3 As Long, iPep4 As Long, iCod As Long, iFam As Long, iTipo As Long
     Dim iValor As Long, iLib As Long, iPrj As Long, iTipoPep As Long, iUnd As Long
-    Dim c As Long, hb As String
-    For c = 1 To lastC
-        hb = NormStr(CStr(wsBase.Cells(1, c).Value))
-        Select Case hb
-            Case "PEP3NIVEL":   iPep3 = c
-            Case "PEP4NIVEL":   iPep4 = c
-            Case "COD MAT":     iCod = c
-            Case "FAMILIA":     iFam = c
-            Case "TIPO":        iTipo = c
-            Case "VALOR":       iValor = c
-            Case "MAT LIB SAP": iLib = c
-            Case "MAT PRJ CAD": iPrj = c
-            Case "TIPO PEP":    iTipoPep = c
-            Case "UND":         iUnd = c
-        End Select
-    Next c
+    Dim c As Long
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    iPep3    = ColIdx(mapa, "PEP3NIVEL")
+    iPep4    = ColIdx(mapa, "PEP4NIVEL")
+    iCod     = ColIdx(mapa, "COD MAT")
+    iFam     = ColIdx(mapa, "FAMILIA")
+    iTipo    = ColIdx(mapa, "TIPO")
+    iValor   = ColIdx(mapa, "VALOR")
+    iLib     = ColIdx(mapa, "MAT LIB SAP")
+    iPrj     = ColIdx(mapa, "MAT PRJ CAD")
+    iTipoPep = ColIdx(mapa, "TIPO PEP")
+    iUnd     = ColIdx(mapa, "UND")
 
     Dim refCol As Long : refCol = iPep4 : If refCol = 0 Then refCol = 1
     Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, refCol).End(xlUp).Row
@@ -3686,7 +5549,7 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Dim dP4 As Object : Set dP4 = CreateObject("Scripting.Dictionary")
     Dim dDup As Object : Set dDup = CreateObject("Scripting.Dictionary")
     Dim nFamVazia As Long, nTipoVazio As Long, nCodVazio As Long
-    Dim nQtdInval As Long, nUC As Long, nUC0 As Long, nDup As Long, nValNegODI As Long
+    Dim nQtdInval As Long, nUC As Long, nUC0 As Long, nDup As Long, nSinalInv As Long
     Dim i As Long, s As String, tp As String, p4 As String, kDup As String
     For i = 1 To n
         If iPep3 > 0 Then
@@ -3724,16 +5587,23 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
                 If dDup(kDup) = 2 Then nDup = nDup + 1
             End If
         End If
-        ' valor negativo em ODI (PEP .I - esperado positivo)
-        If iValor > 0 And p4 <> "" Then
-            Dim ehODI As Boolean : ehODI = (Right(p4, 2) = ".I")
-            If iTipoPep > 0 Then If NormStr(CStr(d(i, iTipoPep))) = "I" Then ehODI = True
-            If ehODI And Val0(d(i, iValor)) < 0 Then nValNegODI = nValNegODI + 1
+        ' sinal invertido por tipo de OD (mesma premissa de AvaliarLinha):
+        ' ODD exige negativo; ODI/ODS exigem positivo - em valor E quantidade
+        If p4 <> "" Then
+            Dim tpOdD As String : tpOdD = ""
+            If iTipoPep > 0 Then tpOdD = CStr(d(i, iTipoPep))
+            Dim lbD As Variant, vlD As Variant
+            lbD = 0 : vlD = 0
+            If iLib > 0 Then lbD = d(i, iLib)
+            If iValor > 0 Then vlD = d(i, iValor)
+            If SinalInvalidoOD(ClassificarOD(p4, tpOdD), lbD, vlD) <> "" Then nSinalInv = nSinalInv + 1
         End If
     Next i
 
     ' ---- monta as verificacoes (nome, resultado, status, recomendacao) ----
-    Dim chk(1 To 12, 1 To 4) As String
+    ' folga proposital: DiagAdd ignora verificacoes acima deste limite em vez
+    ' de derrubar a macro com "Subscript out of range" no meio da geracao
+    Dim chk(1 To 32, 1 To 4) As String
     Dim nChk As Long, nCrit As Long, nAten As Long
 
     DiagAdd chk, nChk, nCrit, nAten, "Volume da base", _
@@ -3772,10 +5642,10 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
         IIf(nDup > 0, "ATENCAO", "OK"), _
         "Duplicidade soma quantidades 2x e pode gerar falso NAO ADERENTE. Consolide os lancamentos."
 
-    DiagAdd chk, nChk, nCrit, nAten, "Valor negativo em obra ODI (.I)", _
-        Format(nValNegODI, "#,##0") & " linha(s)", _
-        IIf(nValNegODI > 0, "ATENCAO", "OK"), _
-        "ODI espera valores positivos; negativo costuma ser estorno lancado na obra errada."
+    DiagAdd chk, nChk, nCrit, nAten, "Sinal invertido por tipo de OD", _
+        Format(nSinalInv, "#,##0") & " linha(s)", _
+        IIf(nSinalInv > 0, "ATENCAO", "OK"), _
+        "ODD exige valor e quantidade negativos; ODI/ODS, positivos. Essas linhas viram NAO ADERENTE."
 
     Dim faltantes As String : faltantes = ""
     If iTipoPep = 0 Then faltantes = faltantes & "TIPO PEP; "
@@ -3785,6 +5655,26 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
         IIf(faltantes = "", "Todas presentes", "Faltam: " & Left(faltantes, Len(faltantes) - 2)), _
         IIf(faltantes = "", "OK", "ATENCAO"), _
         "Colunas opcionais enriquecem alertas (ODI/ODM, unidade, valores em R$)."
+
+    ' base de precos: fonte usada nesta execucao e idade do arquivo externo
+    ' (PRECO UNITARIO e ALERTA CRITICO ja rodaram e registraram a fonte)
+    Dim maxDias As Double : maxDias = CfgD("PRECOS_MAX_DIAS", 90)
+    Dim resP As String, stP As String
+    If mFontePrecos = "" Then
+        resP = "Nao consultada nesta execucao" : stP = "OK"
+    ElseIf Left(mFontePrecos, 7) = "NENHUMA" Or InStr(mFontePrecos, "NAO ABRIU") > 0 _
+           Or InStr(mFontePrecos, "vazia") > 0 Then
+        resP = mFontePrecos : stP = "ATENCAO"
+    ElseIf IsEmpty(mFontePrecosData) Then
+        resP = "Aba interna (sem data para conferir)" : stP = "OK"
+    Else
+        Dim diasP As Long : diasP = DateDiff("d", mFontePrecosData, Now)
+        resP = "Arquivo alterado em " & Format(mFontePrecosData, "dd/mm/yyyy") & " (" & diasP & " dias)"
+        stP = IIf(diasP > maxDias, "ATENCAO", "OK")
+    End If
+    DiagAdd chk, nChk, nCrit, nAten, "Base de precos atualizada", resP, stP, _
+        "Faixas MIN/MAX antigas distorcem PRECO UNITARIO e os alertas de preco. Atualize a " & _
+        "BASE DE PRECOS (limite: " & maxDias & " dias - CONFIG PRECOS_MAX_DIAS)."
 
     Dim nota As Double : nota = NotaSaude(nCrit, nAten)
     Dim rotSaude As String, corSaude As Long
@@ -3873,6 +5763,9 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     ws.Columns(3).ColumnWidth = 12 : ws.Columns(4).ColumnWidth = 78
     ws.Tab.Color = corSaude
 
+    ' Replica os apontamentos CRITICO/ATENCAO na aba ALERTA CRITICO
+    AnexarAtencoesAlerta wb, chk, nChk
+
     On Error Resume Next
     ws.Activate
     ActiveWindow.DisplayGridlines = False
@@ -3880,10 +5773,117 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     On Error GoTo 0
 End Sub
 
+' Copia para a aba ALERTA CRITICO as verificacoes do DIAGNOSTICO DA BASE que
+' ficaram com status CRITICO ou ATENCAO, como um bloco no fim da lista de
+' alertas (os CRITICO primeiro).
+' Roda depois de ProcessarAlertaCritico, entao a aba ja esta montada:
+' linhas 1-2 = banda de titulo, linha 3 = cabecalho, linha 4+ = dados.
+Private Sub AnexarAtencoesAlerta(wb As Workbook, chk() As String, nChk As Long)
+    Dim wsA As Worksheet
+    On Error Resume Next
+    Set wsA = wb.Worksheets("ALERTA CRITICO")
+    On Error GoTo 0
+    If wsA Is Nothing Then Exit Sub
+
+    Dim i As Long, nAt As Long, nCr As Long
+    For i = 1 To nChk
+        If chk(i, 3) = "CRITICO" Then nCr = nCr + 1
+        If chk(i, 3) = "ATENCAO" Then nAt = nAt + 1
+    Next i
+    If nCr + nAt = 0 Then Exit Sub
+
+    ' Aba sem cabecalho = ProcessarAlertaCritico abortou antes de monta-la (o
+    ' motivo vai para a mensagem final e o LOG EXECUCAO). Monta o esqueleto -
+    ' titulo + cabecalho - para as linhas abaixo ficarem legiveis e filtraveis,
+    ' em vez de cairem soltas numa aba vazia.
+    If LinhaCabecalhoAlerta(wsA) = 0 Then
+        wsA.Cells.Clear
+        EscreverTituloAlerta wsA
+        EscreverCabecalhoAlerta wsA, 3
+    End If
+
+    Dim r0A As Long : r0A = PrimeiraLinhaAlerta(wsA)
+    Dim lastA As Long : lastA = wsA.Cells(wsA.Rows.Count, 1).End(xlUp).Row
+    If lastA < r0A - 1 Then lastA = r0A - 1
+    ' base sem alertas: a 1a linha de dados traz so o texto informativo, que sai
+    If lastA = r0A Then
+        If InStr(UCase(CStr(wsA.Cells(r0A, 1).Value)), "NENHUM ALERTA") > 0 Then
+            wsA.Rows(r0A).ClearContents
+            wsA.Cells(r0A, 1).Font.Italic = False
+            wsA.Cells(r0A, 1).Font.Color = RGB(45, 52, 64)
+            lastA = r0A - 1
+        End If
+    End If
+
+    ' 1 TIPO | 5 DESC MAT = verificacao | 10 REFERENCIA = resultado | 11 MOTIVO
+    Dim nTot As Long : nTot = nCr + nAt
+    Dim outA() As Variant : ReDim outA(1 To nTot, 1 To 11)
+    Dim k As Long
+    Dim passe As Long, alvo As String
+    For passe = 1 To 2
+        alvo = IIf(passe = 1, "CRITICO", "ATENCAO")
+        For i = 1 To nChk
+            If chk(i, 3) = alvo Then
+                k = k + 1
+                outA(k, 1) = IIf(passe = 1, "QUALIDADE DA BASE - CRITICO", "QUALIDADE DA BASE")
+                outA(k, 5) = chk(i, 1)
+                outA(k, 10) = chk(i, 2)
+                outA(k, 11) = chk(i, 4)
+            End If
+        Next i
+    Next passe
+
+    Dim r1 As Long : r1 = lastA + 1
+    Dim r2 As Long : r2 = lastA + nTot
+    wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11)).Value = outA
+
+    With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r2, 11))
+        .Font.Name = "Segoe UI" : .Font.Size = 10 : .Font.Color = RGB(45, 52, 64)
+        .VerticalAlignment = xlCenter
+        .Borders(xlInsideHorizontal).LineStyle = xlContinuous
+        .Borders(xlInsideHorizontal).Color = RGB(255, 255, 255)
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(255, 255, 255)
+    End With
+    ' bloco CRITICO em vermelho, bloco ATENCAO em ambar
+    If nCr > 0 Then
+        wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r1 + nCr - 1, 11)).Interior.Color = RGB(252, 226, 228)
+        With wsA.Range(wsA.Cells(r1, 1), wsA.Cells(r1 + nCr - 1, 1))
+            .Interior.Color = RGB(192, 0, 0)
+            .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
+            .HorizontalAlignment = xlCenter
+        End With
+    End If
+    If nAt > 0 Then
+        wsA.Range(wsA.Cells(r1 + nCr, 1), wsA.Cells(r2, 11)).Interior.Color = RGB(255, 244, 214)
+        With wsA.Range(wsA.Cells(r1 + nCr, 1), wsA.Cells(r2, 1))
+            .Interior.Color = RGB(176, 124, 0)
+            .Font.Bold = True : .Font.Size = 9 : .Font.Color = RGB(255, 255, 255)
+            .HorizontalAlignment = xlCenter
+        End With
+    End If
+    wsA.Range(wsA.Cells(r1, 5), wsA.Cells(r2, 5)).HorizontalAlignment = xlLeft
+    wsA.Range(wsA.Cells(r1, 10), wsA.Cells(r2, 11)).HorizontalAlignment = xlLeft
+    Dim rr As Long
+    For rr = r1 To r2
+        wsA.Rows(rr).RowHeight = 20
+    Next rr
+    If wsA.Columns(10).ColumnWidth < 24 Then wsA.Columns(10).ColumnWidth = 24
+
+    ' refaz o autofiltro para abranger as linhas acrescentadas
+    On Error Resume Next
+    If wsA.AutoFilterMode Then wsA.AutoFilterMode = False
+    wsA.Range(wsA.Cells(r0A - 1, 1), wsA.Cells(r2, 11)).AutoFilter
+    On Error GoTo 0
+End Sub
+
 ' Acrescenta uma verificacao ao quadro do diagnostico e contabiliza o status.
 Private Sub DiagAdd(chk() As String, ByRef nChk As Long, ByRef nCrit As Long, _
                     ByRef nAten As Long, nome As String, resultado As String, _
                     status As String, recom As String)
+    ' guarda de limite: sem isto, a 1a verificacao alem do tamanho de chk()
+    ' derrubaria GerarInventario com erro 9 em tempo de execucao
+    If nChk >= UBound(chk, 1) Then Exit Sub
     nChk = nChk + 1
     chk(nChk, 1) = nome : chk(nChk, 2) = resultado
     chk(nChk, 3) = status : chk(nChk, 4) = recom
@@ -3973,15 +5973,104 @@ Private Sub AtualizarHistorico(wb As Workbook)
     ws.Tab.Color = RGB(60, 60, 60)
 End Sub
 
+' --------- KPIs por execucao: base da comparacao "vs. execucao anterior" ---------
+' O HISTORICO existente guarda uma linha por OBRA; para os cards do painel e
+' preciso o agregado da RODADA, entao vai numa aba propria e oculta (ABA_KPI).
+
+' Ultima rodada registrada: array (1 To 6) = PEPs, reprovados, alertas,
+' divergencias, valor em risco, nota da base. Empty quando nao ha historico.
+Private Function LerUltimoKpiRun(wb As Workbook) As Variant
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(ABA_KPI)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Function
+    Dim lastR As Long : lastR = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastR < 2 Then Exit Function
+    Dim v(1 To 6) As Double, c As Long
+    For c = 1 To 6
+        v(c) = Val0(ws.Cells(lastR, c + 1).Value)
+    Next c
+    LerUltimoKpiRun = v
+End Function
+
+Private Sub RegistrarKpiRun(wb As Workbook, ByVal nPep3 As Long, ByVal nReprov As Long, _
+        ByVal nAlertas As Long, ByVal nDiverg As Long, ByVal valRisk As Double, _
+        ByVal nota As Double)
+    On Error Resume Next
+    Dim ws As Worksheet
+    Set ws = wb.Worksheets(ABA_KPI)
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = ABA_KPI
+        Dim h As Variant
+        h = Array("RUN", "PEPS", "REPROVADOS", "ALERTAS", "DIVERGENCIAS", _
+                  "VALOR EM RISCO", "NOTA BASE")
+        Dim c As Long
+        For c = 1 To 7
+            ws.Cells(1, c).Value = h(c - 1)
+        Next c
+        With ws.Range("A1:G1")
+            .Font.Bold = True
+            .Interior.Color = RGB(17, 24, 39) : .Font.Color = RGB(255, 255, 255)
+        End With
+        ws.Columns(1).ColumnWidth = 18
+        For c = 2 To 7
+            ws.Columns(c).ColumnWidth = 15
+        Next c
+    Else
+        ws.Visible = xlSheetVisible
+    End If
+    Dim r As Long : r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+    If r < 2 Then r = 2
+    ws.Cells(r, 1).Value = Format(Now, "dd/mm/yyyy hh:nn")
+    ws.Cells(r, 2).Value = nPep3
+    ws.Cells(r, 3).Value = nReprov
+    ws.Cells(r, 4).Value = nAlertas
+    ws.Cells(r, 5).Value = nDiverg
+    ws.Cells(r, 6).Value = valRisk
+    ws.Cells(r, 7).Value = nota
+    ws.Tab.Color = RGB(120, 120, 120)
+    ' sai da aba antes de oculta-la (a recem-criada fica ativa)
+    wb.Worksheets(1).Activate
+    ws.Visible = xlSheetHidden
+    On Error GoTo 0
+End Sub
+
+' Texto da variacao para o rodape do card. bomSeCai = True quando DIMINUIR e
+' o resultado desejado (alertas, reprovados, valor em risco...).
+' ByVal nos parametros de entrada: sem isso, passar um Long (nPep3, nAlertas...)
+' para um parametro Double ByRef daria "ByRef argument type mismatch".
+Private Function TxtDelta(ByVal atual As Double, ByVal ant As Variant, _
+        ByVal bomSeCai As Boolean, ByRef cor As Long, _
+        Optional ByVal moeda As Boolean = False) As String
+    cor = RGB(130, 138, 150)
+    If IsEmpty(ant) Then Exit Function
+    Dim dif As Double : dif = atual - CDbl(ant)
+    If Abs(dif) < 0.000001 Then
+        TxtDelta = ChrW(&H2022) & " sem variacao"
+        Exit Function
+    End If
+    Dim bom As Boolean
+    If dif < 0 Then bom = bomSeCai Else bom = Not bomSeCai
+    If bom Then cor = RGB(21, 115, 71) Else cor = RGB(192, 0, 0)
+    Dim v As String
+    If moeda Then v = FmtKPI(Abs(dif)) Else v = Format(Abs(dif), "#,##0")
+    TxtDelta = IIf(dif > 0, ChrW(&H25B2), ChrW(&H25BC)) & " " & v & " vs. anterior"
+End Function
+
 ' --------- Nomes definidos: referencia estavel para formulas do usuario ---------
 Private Sub CriarNomesDefinidos(wb As Workbook)
     DefinirNome wb, "ANALISE SAP x PRJ", "dadosAnalise", "PEP3NIVEL", 1, 16
     DefinirNome wb, "PRECO UNITARIO", "dadosPrecoUnitario", "PEP3NIVEL", 1, 14
-    DefinirNome wb, "RANKING DE RISCO", "dadosRanking", "PEP3NIVEL", 2, 11
+    DefinirNome wb, "RANKING DE RISCO", "dadosRanking", "PEP3NIVEL", 2, 11, True
 End Sub
 
+' contiguo = True: o intervalo termina no fim do bloco de dados (para abas com
+' outra secao abaixo, como o RANKING DE RISCO); False: ultima linha preenchida.
 Private Sub DefinirNome(wb As Workbook, sheetName As String, nome As String, _
-                        token As String, colToken As Long, nCols As Long)
+                        token As String, colToken As Long, nCols As Long, _
+                        Optional ByVal contiguo As Boolean = False)
     On Error Resume Next
     Dim ws As Worksheet : Set ws = wb.Worksheets(sheetName)
     If ws Is Nothing Then Exit Sub
@@ -3992,6 +6081,7 @@ Private Sub DefinirNome(wb As Workbook, sheetName As String, nome As String, _
     Next rr
     If hdrRow = 0 Then Exit Sub
     Dim lastRow As Long : lastRow = ws.Cells(ws.Rows.Count, colToken).End(xlUp).Row
+    If contiguo Then lastRow = UltimaLinhaContigua(ws, hdrRow + 1, colToken)
     If lastRow < hdrRow Then Exit Sub
     wb.Names(nome).Delete
     wb.Names.Add Name:=nome, RefersTo:="='" & ws.Name & "'!" & _
@@ -4001,7 +6091,7 @@ End Sub
 
 ' --------- Testes de logica de negocio (rode via Alt+F8) ---------
 Public Sub TestarLogicaInventario()
-    Dim nomes(1 To 60) As String, oks(1 To 60) As Boolean, det(1 To 60) As String
+    Dim nomes(1 To 200) As String, oks(1 To 200) As Boolean, det(1 To 200) As String
     Dim cnt As Long, pass As Long
     Dim mp As Object : Set mp = CriarMapaNT006()
 
@@ -4043,6 +6133,136 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "AvaliarLinha UC zerado (obra toda zerada): reprova", (avT.UcZerado And avT.ReprovaLinha And Not avT.EhAder)
     avT = AvaliarLinha("UC", "PARAFUSO", 0, 0, "NULO", False)
     RegTest nomes, oks, det, cnt, "AvaliarLinha UC zerado isolado: ignorado, nao reprova", (Not avT.UcZerado And Not avT.ReprovaLinha)
+    ' Premissa de sinal por tipo de OD (valor E quantidade):
+    RegTest nomes, oks, det, cnt, "ClassificarOD sufixo .D = ODD", (ClassificarOD("1234.D", "") = "ODD")
+    RegTest nomes, oks, det, cnt, "ClassificarOD sem sufixo, TIPO PEP S = ODS", (ClassificarOD("1234", "S") = "ODS")
+    RegTest nomes, oks, det, cnt, "Sinal ODD -5/-100 = ok", (SinalInvalidoOD("ODD", -5, -100) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODD qtd +5 = NAO ADERENTE", (SinalInvalidoOD("ODD", 5, -100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODD valor +100 = NAO ADERENTE", (SinalInvalidoOD("ODD", -5, 100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODI 5/100 = ok", (SinalInvalidoOD("ODI", 5, 100) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODS valor -100 = NAO ADERENTE", (SinalInvalidoOD("ODS", 5, -100) <> "")
+    RegTest nomes, oks, det, cnt, "Sinal ODI zero = ok (nao e negativo)", (SinalInvalidoOD("ODI", 0, 0) = "")
+    RegTest nomes, oks, det, cnt, "Sinal ODM negativo = fora da premissa", (SinalInvalidoOD("ODM", -5, -100) = "")
+    avT = AvaliarLinha("UC", "PARAFUSO", 5, 5, "ADERENTE", False, "ODD", 100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD positivo: NAO ADERENTE e reprova", (avT.ViolaOD And Not avT.EhAder And avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "PARAFUSO", -5, -5, "ADERENTE", False, "ODD", -100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD negativo: sinal ok, aderente", (Not avT.ViolaOD And avT.EhAder)
+    ' Alerta PU BAIXO EM ODI (faixa 0,01 a 10, sem condutores/cabos):
+    RegTest nomes, oks, det, cnt, "PuBaixoODI ODI PU 5 = alerta", (PuBaixoODI("ODI", "PARAFUSO", 5, 1, 0.01, 10) = True)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI ODI PU 0,01 (limite) = alerta", (PuBaixoODI("ODI", "PARAFUSO", 0.01, 1, 0.01, 10) = True)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI ODI PU 10 (limite) = alerta", (PuBaixoODI("ODI", "PARAFUSO", 30, 3, 0.01, 10) = True)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI ODI PU 10,50 = sem alerta", (PuBaixoODI("ODI", "PARAFUSO", 10.5, 1, 0.01, 10) = False)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI ODI PU 0,005 = sem alerta", (PuBaixoODI("ODI", "PARAFUSO", 0.005, 1, 0.01, 10) = False)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI CABO ISOLADO = excluido", (PuBaixoODI("ODI", "CABO ISOLADO", 5, 1, 0.01, 10) = False)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI COND NU = excluido", (PuBaixoODI("ODI", "COND NU", 5, 1, 0.01, 10) = False)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI PEP ODS = fora (so ODI)", (PuBaixoODI("ODS", "PARAFUSO", 5, 1, 0.01, 10) = False)
+    RegTest nomes, oks, det, cnt, "PuBaixoODI QTD zero = sem alerta", (PuBaixoODI("ODI", "PARAFUSO", 5, 0, 0.01, 10) = False)
+    ' Equivalentes: mesmo numero no total do grupo no PEP4. Caso real
+    ' (grupo 3): 105010022 SAP 0 / PRJ 9 + 105010003 SAP 3 / PRJ 0 = 3 x 9
+    RegTest nomes, oks, det, cnt, "Equivalente total SAP 3 / PRJ 9 = NAO ADERENTE", (SitPorQuantidade(0 + 3, 9 + 0) = "NAO ADERENTE")
+    RegTest nomes, oks, det, cnt, "Equivalente total SAP 3 / PRJ 3 = ADERENTE", (SitPorQuantidade(3, 3) = "ADERENTE")
+    RegTest nomes, oks, det, cnt, "Equivalente SAP 9 / PRJ 10 = NAO ADERENTE (sem tolerancia)", (SitPorQuantidade(9, 10) = "NAO ADERENTE")
+    avT = AvaliarLinha("UC", "COND PROT", 10, 10.5, "ADERENTE", False)
+    AjustarAderEquiv avT, 10, 10.5
+    RegTest nomes, oks, det, cnt, "Equivalente cabo 10 x 10,5: NAO ADERENTE (regra de cabo nao vale)", (Not avT.EhAder And avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "COND PROT", 10, 10, "ADERENTE", False)
+    AjustarAderEquiv avT, 10, 10
+    RegTest nomes, oks, det, cnt, "Equivalente cabo 10 x 10: ADERENTE", (avT.EhAder And Not avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "CH SU FACA", 3, 9, SitPorQuantidade(3, 9), False)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha equivalente 3 x 9: NAO ADERENTE e reprova", (Not avT.EhAder And avT.ReprovaLinha)
+    avT = AvaliarLinha("UC", "CH SU FACA", 3, 3, SitPorQuantidade(3, 3), False, "ODD", 100)
+    RegTest nomes, oks, det, cnt, "Equivalente 3 x 3 com sinal invertido: NAO ADERENTE", (Not avT.EhAder And avT.ViolaOD)
+    Dim dEq As Object : Set dEq = CreateObject("Scripting.Dictionary")
+    dEq.Add "105000058", "CH SEC 1P" : dEq.Add "105000029", "CH SEC BYPAS"
+    RegTest nomes, oks, det, cnt, "TextoEquiv mantem os dois nomes", (TextoEquiv(dEq) = "105000058 CH SEC 1P = 105000029 CH SEC BYPAS")
+    ' Codigo em dois grupos une os grupos (2 e 11 compartilham 102310194):
+    Dim pT As Object : Set pT = CreateObject("Scripting.Dictionary")
+    pT.Add "2", "2" : pT.Add "11", "2" : pT.Add "5", "5"
+    RegTest nomes, oks, det, cnt, "RaizGrupo 11 unido ao 2 = 2", (RaizGrupo(pT, "11") = "2")
+    RegTest nomes, oks, det, cnt, "RaizGrupo 5 isolado = 5", (RaizGrupo(pT, "5") = "5")
+    ' Lista padrao: 7 campos por linha e sem os grupos 10 e 28 (repetiam 8 e 24)
+    Dim epOk As Boolean : epOk = True
+    Dim epIt As Variant
+    For Each epIt In EquivPadrao()
+        If UBound(epIt) <> 6 Then epOk = False
+        If CStr(epIt(5)) = "10" Or CStr(epIt(5)) = "28" Then epOk = False
+    Next epIt
+    RegTest nomes, oks, det, cnt, "EquivPadrao: 7 campos por linha, sem grupos 10 e 28", epOk
+    avT = AvaliarLinha("UC", "PARAFUSO", -10, -10, "ADERENTE", False, "ODD", -50, 4)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha sinal pela qtd da linha (qtdSinal)", (avT.ViolaOD)
+    ' Cabecalho do layout novo da extracao resolve para os nomes canonicos:
+    Dim mt As Object : Set mt = CreateObject("Scripting.Dictionary")
+    mt.Add NormStr("MATERIAL"), 5 : mt.Add NormStr("ATENDIDO SAP"), 9
+    mt.Add NormStr("TOMBADO PROJ"), 10 : mt.Add NormStr("SITUACAO_DO_MATERIAL"), 13
+    AplicarAliasesBase mt
+    RegTest nomes, oks, det, cnt, "Alias MATERIAL -> COD MAT", (ColIdx(mt, "COD MAT") = 5)
+    RegTest nomes, oks, det, cnt, "Alias ATENDIDO SAP -> MAT LIB SAP", (ColIdx(mt, "MAT LIB SAP") = 9)
+    RegTest nomes, oks, det, cnt, "Alias TOMBADO PROJ -> MAT PRJ CAD", (ColIdx(mt, "MAT PRJ CAD") = 10)
+    RegTest nomes, oks, det, cnt, "Alias SITUACAO_DO_MATERIAL -> SIT MAT", (ColIdx(mt, "SIT MAT") = 13)
+    Dim mt2 As Object : Set mt2 = CreateObject("Scripting.Dictionary")
+    mt2.Add "MAT LIB SAP", 3 : mt2.Add "ATENDIDO SAP", 9
+    AplicarAliasesBase mt2
+    RegTest nomes, oks, det, cnt, "Alias: com os dois nomes, vale o canonico", (ColIdx(mt2, "MAT LIB SAP") = 3)
+    ' Alerta PU 0,01 EM CABO/COND (qualquer PEP; so familias CABO*/COND*):
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo CABO ISOLADO 1,00/100 m = alerta", (PuSimbolicoCabo("CABO ISOLADO", 1, 100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo COND NU 0,012 (mostra 0,01) = alerta", (PuSimbolicoCabo("COND NU", 1.2, 100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo ODD (valor e qtd negativos) = alerta", (PuSimbolicoCabo("CABO COBRE", -1, -100, 0.01) = True)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PU 0,02 = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 2, 100, 0.01) = False)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PARAFUSO 0,01 = fora (so cabo/cond)", (PuSimbolicoCabo("PARAFUSO", 1, 100, 0.01) = False)
+    RegTest nomes, oks, det, cnt, "PuSimbolicoCabo QTD zero = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 1, 0, 0.01) = False)
+    ' ODD com valor abaixo de -100 = NAO ADERENTE ("abaixo" = mais negativo):
+    RegTest nomes, oks, det, cnt, "ValorBaixoODD -150 = NAO ADERENTE", (ValorBaixoODD("ODD", -150, -100) <> "")
+    RegTest nomes, oks, det, cnt, "ValorBaixoODD -100 (limite) = ok", (ValorBaixoODD("ODD", -100, -100) = "")
+    RegTest nomes, oks, det, cnt, "ValorBaixoODD -50 = ok", (ValorBaixoODD("ODD", -50, -100) = "")
+    RegTest nomes, oks, det, cnt, "ValorBaixoODD em ODI = fora (so ODD)", (ValorBaixoODD("ODI", -150, -100) = "")
+    avT = AvaliarLinha("UC", "PARAFUSO", -5, -5, "ADERENTE", False, "ODD", -150)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD valor -150: NAO ADERENTE e reprova", (avT.ViolaOD And Not avT.EhAder And avT.ReprovaLinha)
+    ' Alerta POSTE ODI PU BAIXO (preco unitario de 0 a < 500, so ODI):
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI POSTE RD R$ 400 = alerta", (PosteBaratoODI("ODI", "POSTE RD", 400, 1, 500) = True)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI 2 postes R$ 800 (PU 400) = alerta", (PosteBaratoODI("ODI", "POSTE RD", 800, 2, 500) = True)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU 500 (limite) = sem alerta", (PosteBaratoODI("ODI", "POSTE RD", 500, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU 1.200 = sem alerta", (PosteBaratoODI("ODI", "POSTE RD", 1200, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PEP ODD = fora (so ODI)", (PosteBaratoODI("ODD", "POSTE RD", 400, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI TRAFO = fora (so poste)", (PosteBaratoODI("ODI", "TRAFO", 400, 1, 500) = False)
+    RegTest nomes, oks, det, cnt, "PosteBaratoODI PU negativo = fora (alerta de sinal)", (PosteBaratoODI("ODI", "POSTE RD", -400, 1, 500) = False)
+    ' Alerta MEDIDOR EM PEP ODI (medidor e material de ODM):
+    RegTest nomes, oks, det, cnt, "MedidorEmODI medidor em ODI = alerta", (MedidorEmODI("ODI", NormStr("MEDIDOR ELETRONICO MONOFASICO"), "MEDIDOR") = True)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI so pela familia = alerta", (MedidorEmODI("ODI", NormStr("ELETRONICO 1F 120V"), "MEDIDOR") = True)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI medidor em ODM = sem alerta", (MedidorEmODI("ODM", NormStr("MEDIDOR ELETRONICO"), "MEDIDOR") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI CAIXA PARA MEDIDOR = sem alerta", (MedidorEmODI("ODI", NormStr("CAIXA PARA MEDIDOR"), "CAIXA MEDICAO") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI LACRE P/ MEDIDOR = sem alerta", (MedidorEmODI("ODI", NormStr("LACRE P/ MEDIDOR"), "LACRE") = False)
+    RegTest nomes, oks, det, cnt, "MedidorEmODI TRAFO = sem alerta", (MedidorEmODI("ODI", NormStr("TRAFO DT 1F 13,8KV"), "TRAFO") = False)
+    ' Carga de bases: colunas de arquivos diferentes casadas por nome
+    RegTest nomes, oks, det, cnt, "CanonicoBase ATENDIDO SAP -> MAT LIB SAP", (CanonicoBase(NormStr("ATENDIDO SAP")) = "MAT LIB SAP")
+    RegTest nomes, oks, det, cnt, "CanonicoBase FAMILIA -> FAMILIA (sem alias)", (CanonicoBase("FAMILIA") = "FAMILIA")
+    Dim hT(1 To 1, 1 To 2) As Variant
+    hT(1, 1) = "MATERIAL" : hT(1, 2) = "TOMBADO PROJ"
+    Dim mH As Object : Set mH = MapaDeCabecalho(hT)
+    RegTest nomes, oks, det, cnt, "MapaDeCabecalho layout novo: COD MAT e MAT PRJ CAD", (ColIdx(mH, "COD MAT") = 1 And ColIdx(mH, "MAT PRJ CAD") = 2)
+    RegTest nomes, oks, det, cnt, "NomeArquivo caminho Windows", (NomeArquivo("C:\bases\base jan.xlsx") = "base jan.xlsx")
+    RegTest nomes, oks, det, cnt, "NomeArquivo caminho com /", (NomeArquivo("/Users/x/base.csv") = "base.csv")
+    ' PEP3 reprovado por qualquer valor negativo em ODI:
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor -10 = reprova PEP3", (NegativoEmODI("ODI", -10) = True)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor 0 = ok", (NegativoEmODI("ODI", 0) = False)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODI valor positivo = ok", (NegativoEmODI("ODI", 150) = False)
+    RegTest nomes, oks, det, cnt, "NegativoEmODI ODD negativo = fora (so ODI)", (NegativoEmODI("ODD", -10) = False)
+    ' SAP x PRJ com sinais opostos: linha NAO ADERENTE e PEP3 reprovado
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP +3 / PRJ -3 = viola", (SinaisOpostos(3, -3) <> "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP -3 / PRJ +3 = viola", (SinaisOpostos(-3, 3) <> "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP 3 / PRJ 3 = ok", (SinaisOpostos(3, 3) = "")
+    RegTest nomes, oks, det, cnt, "SinaisOpostos SAP 0 / PRJ -3 = ok (zero nao tem sinal)", (SinaisOpostos(0, -3) = "")
+    avT = AvaliarLinha("COM", "PARAFUSO", 3, -3, "ADERENTE", False)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha SAP 3 / PRJ -3: NAO ADERENTE", (avT.ViolaOD And Not avT.EhAder)
+    ' Carga de bases: casa colunas por nome e lista as ausentes (previa)
+    Dim dMB(1 To 2, 1 To 2) As Variant
+    dMB(1, 1) = "MATERIAL" : dMB(1, 2) = "ATENDIDO SAP" : dMB(2, 1) = 105010022 : dMB(2, 2) = 3
+    Dim hMB(1 To 3) As String
+    hMB(1) = "COD MAT" : hMB(2) = "MAT LIB SAP" : hMB(3) = "FAMILIA"
+    Dim fMB As String, sMB() As Long
+    Dim vMB As Variant : vMB = dMB
+    sMB = MapearBloco(vMB, hMB, 3, fMB)
+    RegTest nomes, oks, det, cnt, "MapearBloco casa nomes novos e lista a ausente", _
+            (sMB(1) = 1 And sMB(2) = 2 And sMB(3) = 0 And fMB = "FAMILIA")
     ' TodosUCZerados: devolve a obra so quando TODOS os UC do PEP3 estao zerados
     Dim dz1 As Object, dz2 As Object
     Set dz1 = CreateObject("Scripting.Dictionary") : Set dz2 = CreateObject("Scripting.Dictionary")
@@ -4100,6 +6320,7 @@ End Sub
 
 Private Sub RegTest(nomes() As String, oks() As Boolean, det() As String, _
                     cnt As Long, nome As String, ok As Boolean)
+    If cnt >= UBound(nomes) Then Exit Sub   ' nao estoura o quadro de testes
     cnt = cnt + 1
     nomes(cnt) = nome : oks(cnt) = ok : det(cnt) = IIf(ok, "PASSOU", "FALHOU")
 End Sub
