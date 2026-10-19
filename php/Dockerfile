@@ -12,7 +12,7 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 ENV APACHE_DOCUMENT_ROOT=/var/www/app/public \
     INVENTARIO_DADOS=/var/www/app/storage
 RUN sed -ri 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf /etc/apache2/apache2.conf \
- && printf 'upload_max_filesize=50M\npost_max_size=60M\nmemory_limit=1024M\nmax_execution_time=300\n' > /usr/local/etc/php/conf.d/inventario.ini
+ && printf 'upload_max_filesize=50M\npost_max_size=60M\nmemory_limit=448M\nmax_execution_time=300\n' > /usr/local/etc/php/conf.d/inventario.ini
 
 WORKDIR /var/www/app
 COPY composer.json composer.lock ./

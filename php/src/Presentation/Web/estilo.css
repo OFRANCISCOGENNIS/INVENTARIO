@@ -39,3 +39,4 @@ td.num { text-align: right; white-space: nowrap; }
 tbody tr:not([style]) { background: var(--cartao); }
 .chip { display: inline-block; padding: 1px 6px; border-radius: 4px; color: #fff; font-weight: 700; white-space: nowrap; }
 .vazio { font-style: italic; color: var(--ok); }
+.corte { font-size: 12px; font-weight: 600; color: var(--aviso); }

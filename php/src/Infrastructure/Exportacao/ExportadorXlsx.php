@@ -7,23 +7,23 @@ namespace Inventario\Infrastructure\Exportacao;
 use Inventario\Application\Relatorio\Aba;
 use Inventario\Application\Relatorio\Bloco;
 use Inventario\Application\Relatorio\Relatorio;
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
-use PhpOffice\PhpSpreadsheet\Cell\DataType;
-use PhpOffice\PhpSpreadsheet\Spreadsheet;
-use PhpOffice\PhpSpreadsheet\Style\Alignment;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
-use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
-use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use RuntimeException;
+use ZipArchive;
 
 /**
  * Relatorio em XLSX com a identidade visual do VBA: banda de titulo, cabecalho
  * navy, linhas coloridas pelo status, chip colorido na coluna de status,
  * autofiltro e painel congelado na tabela principal.
+ *
+ * Grava o XML de cada aba direto em arquivo, linha a linha: a memoria nao
+ * cresce com o tamanho da base (montar a planilha inteira em objetos estourava
+ * os 512 MB de um servidor pequeno com 30 mil linhas).
  */
 final class ExportadorXlsx implements Exportador
 {
     private const NAVY = '111827';
-    private const FONTE = 'Segoe UI';
+    private const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    private const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
     public function extensao(): string
     {
@@ -32,128 +32,301 @@ final class ExportadorXlsx implements Exportador
 
     public function exportar(Relatorio $r, string $caminho): string
     {
-        $book = new Spreadsheet();
-        $book->removeSheetByIndex(0);
-        foreach ($r->abas as $a) {
-            $this->aba($book->createSheet(), $a);
+        $estilos = new EstilosXlsx();
+        $temps = [];
+        $nomes = [];
+        $filtros = [];
+        try {
+            foreach ($r->abas as $i => $a) {
+                $nome = self::nomeAba($a->nome, $nomes);
+                $nomes[] = $nome;
+                $tmp = tempnam(sys_get_temp_dir(), 'aba');
+                if ($tmp === false) {
+                    throw new RuntimeException('sem espaco temporario para gravar o XLSX');
+                }
+                $temps[] = $tmp;
+                $filtros[$i] = $this->gravarAba($a, $tmp, $estilos);
+            }
+
+            $zip = new ZipArchive();
+            if ($zip->open($caminho, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+                throw new RuntimeException("nao foi possivel criar {$caminho}");
+            }
+            $zip->addFromString('[Content_Types].xml', $this->tipos(count($nomes)));
+            $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                . '</Relationships>');
+            $zip->addFromString('xl/workbook.xml', $this->workbook($nomes, $filtros));
+            $zip->addFromString('xl/_rels/workbook.xml.rels', $this->relacoes(count($nomes)));
+            $zip->addFromString('xl/styles.xml', $estilos->xml());
+            foreach ($temps as $i => $tmp) {
+                $zip->addFile($tmp, 'xl/worksheets/sheet' . ($i + 1) . '.xml');
+            }
+            $zip->close();
+        } finally {
+            foreach ($temps as $tmp) {
+                @unlink($tmp);
+            }
         }
-        $book->setActiveSheetIndex(0);
-        $book->getProperties()->setTitle('Analise de Inventario - ' . $r->base)->setCreator('Inventario');
-        (new Xlsx($book))->save($caminho);
-        $book->disconnectWorksheets();
 
         return $caminho;
     }
 
-    private function aba(Worksheet $ws, Aba $a): void
+    /** @return string|null faixa do autofiltro (ex.: A5:P120) */
+    private function gravarAba(Aba $a, string $arquivo, EstilosXlsx $e): ?string
     {
-        $ws->setTitle(mb_substr($a->nome, 0, 31));
-        $ws->getTabColor()->setRGB($a->corGuia);
-        $ws->setShowGridlines(false);
-        $nCols = max(1, ...array_map(static fn (Bloco $b): int => count($b->cabecalho), $a->blocos ?: [new Bloco('', ['-'], [])]));
-        $ult = Coordinate::stringFromColumnIndex(max($nCols, 4));
+        $nCols = 4;
+        foreach ($a->blocos as $b) {
+            $nCols = max($nCols, count($b->cabecalho));
+        }
+        $ult = self::col($nCols - 1);
 
-        $ws->mergeCells("A1:{$ult}1");
-        $ws->setCellValue('A1', $a->titulo);
-        $this->estilo($ws, "A1:{$ult}1", 'FFFFFF', $a->corGuia, 16, true);
-        $ws->getRowDimension(1)->setRowHeight(30);
-        $ws->mergeCells("A2:{$ult}2");
-        $ws->setCellValue('A2', $a->subtitulo);
-        $this->estilo($ws, "A2:{$ult}2", 'C8D2E1', self::NAVY, 9, false);
-
+        // 1a passada: onde fica a maior tabela (autofiltro + painel congelado)
         $linha = 4;
         $principal = null;
         foreach ($a->blocos as $b) {
-            [$linha, $hdr] = $this->bloco($ws, $b, $linha);
-            // a maior tabela da aba ganha autofiltro e painel congelado
-            if ($principal === null || count($b->linhas) > $principal[2]) {
-                $principal = [$hdr, count($b->cabecalho), count($b->linhas)];
+            $hdr = $linha + ($b->titulo !== '' ? 1 : 0);
+            $nLin = count($b->linhas);
+            if ($principal === null || $nLin > $principal[2]) {
+                $principal = [$hdr, count($b->cabecalho), $nLin];
             }
-            $linha += 2;
+            $linha = $hdr + 1 + ($nLin === 0 ? ($b->vazio !== '' ? 1 : 0) : $nLin) + 2;
         }
+        $filtro = null;
+        $congela = '';
         if ($principal !== null && $principal[2] > 0) {
-            [$hdr, $n] = $principal;
-            $ws->setAutoFilter('A' . $hdr . ':' . Coordinate::stringFromColumnIndex($n) . ($hdr + $principal[2]));
-            $ws->freezePane('A' . ($hdr + 1));
+            $filtro = 'A' . $principal[0] . ':' . self::col($principal[1] - 1) . ($principal[0] + $principal[2]);
         }
-        foreach ($a->larguras as $i => $w) {
-            $ws->getColumnDimension(Coordinate::stringFromColumnIndex($i + 1))->setWidth($w);
+        // congela so quando a tabela comeca no alto (no painel ela fica la embaixo)
+        if ($filtro !== null && $principal[0] <= 12) {
+            $topo = $principal[0] + 1;
+            $congela = '<pane ySplit="' . $principal[0] . "\" topLeftCell=\"A{$topo}\" activePane=\"bottomLeft\" state=\"frozen\"/>"
+                . "<selection pane=\"bottomLeft\" activeCell=\"A{$topo}\" sqref=\"A{$topo}\"/>";
         }
-        if ($a->larguras === []) {
-            for ($c = 1; $c <= $nCols; $c++) {
-                $ws->getColumnDimension(Coordinate::stringFromColumnIndex($c))->setWidth(18);
-            }
+
+        $f = fopen($arquivo, 'wb');
+        if ($f === false) {
+            throw new RuntimeException('nao foi possivel gravar a aba ' . $a->nome);
         }
+        $cols = '';
+        $larg = $a->larguras !== [] ? $a->larguras : array_fill(0, $nCols, 18);
+        foreach ($larg as $i => $w) {
+            $n = $i + 1;
+            $cols .= "<col min=\"{$n}\" max=\"{$n}\" width=\"{$w}\" customWidth=\"1\"/>";
+        }
+        fwrite($f, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<worksheet xmlns="' . self::NS . '" xmlns:r="' . self::NS_R . '">'
+            . '<sheetPr><tabColor rgb="FF' . $a->corGuia . '"/></sheetPr>'
+            . '<dimension ref="A1:' . $ult . max(2, $linha - 3) . '"/>'
+            . '<sheetViews><sheetView showGridLines="0" workbookViewId="0">' . $congela . '</sheetView></sheetViews>'
+            . '<sheetFormatPr defaultRowHeight="15"/>'
+            . "<cols>{$cols}</cols><sheetData>");
+
+        $merges = ["A1:{$ult}1", "A2:{$ult}2"];
+        fwrite($f, self::linha(1, [$a->titulo], $e->estilo(16, true, 'FFFFFF', $a->corGuia, alinhar: 'center'), $nCols, 30));
+        fwrite($f, self::linha(2, [$a->subtitulo], $e->estilo(9, false, 'C8D2E1', self::NAVY, alinhar: 'center'), $nCols));
+
+        $r = 4;
+        foreach ($a->blocos as $b) {
+            $r = $this->gravarBloco($f, $b, $r, $e, $merges) + 2;
+        }
+        fwrite($f, '</sheetData>');
+        if ($filtro !== null) {
+            fwrite($f, "<autoFilter ref=\"{$filtro}\"/>");
+        }
+        fwrite($f, '<mergeCells count="' . count($merges) . '">');
+        foreach ($merges as $m) {
+            fwrite($f, "<mergeCell ref=\"{$m}\"/>");
+        }
+        fwrite($f, '</mergeCells><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>');
+        fclose($f);
+
+        return $filtro;
     }
 
-    /** @return array{0: int, 1: int} proxima linha livre e linha do cabecalho */
-    private function bloco(Worksheet $ws, Bloco $b, int $r): array
+    /**
+     * @param resource $f
+     * @param list<string> $merges
+     * @return int proxima linha livre
+     */
+    private function gravarBloco($f, Bloco $b, int $r, EstilosXlsx $e, array &$merges): int
     {
         $n = max(1, count($b->cabecalho));
-        $ult = Coordinate::stringFromColumnIndex($n);
+        $ult = self::col($n - 1);
         if ($b->titulo !== '') {
-            $ws->mergeCells("A{$r}:{$ult}{$r}");
-            $ws->setCellValue("A{$r}", $b->titulo);
-            $this->estilo($ws, "A{$r}:{$ult}{$r}", 'FFFFFF', '1F2937', 11, true);
+            $merges[] = "A{$r}:{$ult}{$r}";
+            fwrite($f, self::linha($r, [$b->titulo], $e->estilo(11, true, 'FFFFFF', '1F2937', alinhar: 'center'), $n, 20));
             $r++;
         }
-        $hdr = $r;
-        $ws->fromArray($b->cabecalho, null, "A{$r}");
-        $this->estilo($ws, "A{$r}:{$ult}{$r}", 'EBF0F8', self::NAVY, 10, true);
-        $ws->getStyle("A{$r}:{$ult}{$r}")->getAlignment()->setWrapText(true);
-        $ws->getRowDimension($r)->setRowHeight(28);
+        fwrite($f, self::linha($r, $b->cabecalho, $e->estilo(10, true, 'EBF0F8', self::NAVY, alinhar: 'center', quebra: true), $n, 28));
         $r++;
-
         if ($b->linhas === []) {
             if ($b->vazio !== '') {
-                $ws->setCellValue("A{$r}", $b->vazio);
-                $ws->getStyle("A{$r}")->getFont()->setItalic(true)->getColor()->setRGB('008000');
+                fwrite($f, self::linha($r, [$b->vazio], $e->estilo(9, false, '008000', italico: true), 1));
                 $r++;
             }
 
-            return [$r, $hdr];
+            return $r;
         }
 
-        $r0 = $r;
+        $moeda = array_flip($b->colunasMoeda);
+        $cache = [];
+        $buf = '';
         foreach ($b->linhas as $l) {
-            foreach (array_values($l) as $i => $v) {
-                $cel = Coordinate::stringFromColumnIndex($i + 1) . $r;
-                if (is_string($v) && $v !== '' && (ctype_digit($v) || str_starts_with($v, '='))) {
-                    // codigos numericos ficam como texto (sem notacao cientifica nem formula)
-                    $ws->setCellValueExplicit($cel, $v, DataType::TYPE_STRING);
-                } else {
-                    $ws->setCellValue($cel, $v);
-                }
-            }
             $cor = $b->corDaLinha($l);
-            if ($cor !== null) {
-                $ws->getStyle("A{$r}:{$ult}{$r}")->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB($cor[0]);
-                if ($b->colunaStatus !== null) {
-                    $c = Coordinate::stringFromColumnIndex($b->colunaStatus + 1) . $r;
-                    $ws->getStyle($c)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB($cor[1]);
-                    $ws->getStyle($c)->getFont()->setBold(true)->getColor()->setRGB(self::contraste($cor[1]));
-                    $ws->getStyle($c)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+            $chave = $cor === null ? '-' : $cor[0] . $cor[1];
+            if (!isset($cache[$chave])) {
+                $st = [];
+                for ($i = 0; $i < $n; $i++) {
+                    $st[$i] = $cor !== null && $i === $b->colunaStatus
+                        ? $e->estilo(9, true, self::contraste($cor[1]), $cor[1], isset($moeda[$i]), 'center')
+                        : $e->estilo(9, false, '2D3440', $cor[0] ?? null, isset($moeda[$i]));
                 }
+                $cache[$chave] = [$st, $cor !== null];
             }
+            [$st, $preenche] = $cache[$chave];
+            $buf .= "<row r=\"{$r}\">";
+            $vals = array_values($l);
+            for ($i = 0; $i < $n; $i++) {
+                $buf .= self::celula(self::col($i) . $r, $vals[$i] ?? null, $st[$i], $preenche);
+            }
+            $buf .= '</row>';
             $r++;
+            if (strlen($buf) > 1 << 20) {
+                fwrite($f, $buf);
+                $buf = '';
+            }
         }
-        $faixa = "A{$r0}:{$ult}" . ($r - 1);
-        $ws->getStyle($faixa)->getFont()->setName(self::FONTE)->setSize(9);
-        $ws->getStyle($faixa)->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
-        foreach ($b->colunasMoeda as $c) {
-            $col = Coordinate::stringFromColumnIndex($c + 1);
-            $ws->getStyle("{$col}{$r0}:{$col}" . ($r - 1))->getNumberFormat()->setFormatCode('#,##0.00');
-        }
+        fwrite($f, $buf);
 
-        return [$r, $hdr];
+        return $r;
     }
 
-    private function estilo(Worksheet $ws, string $faixa, string $fonte, string $fundo, int $tam, bool $negrito): void
+    /** @param list<mixed> $valores */
+    private static function linha(int $r, array $valores, int $estilo, int $nCols, ?int $altura = null): string
     {
-        $s = $ws->getStyle($faixa);
-        $s->getFont()->setName(self::FONTE)->setSize($tam)->setBold($negrito)->getColor()->setRGB($fonte);
-        $s->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB($fundo);
-        $s->getAlignment()->setVertical(Alignment::VERTICAL_CENTER)->setHorizontal(Alignment::HORIZONTAL_CENTER);
+        $x = "<row r=\"{$r}\"" . ($altura !== null ? " ht=\"{$altura}\" customHeight=\"1\"" : '') . '>';
+        for ($i = 0; $i < $nCols; $i++) {
+            $x .= self::celula(self::col($i) . $r, $valores[$i] ?? null, $estilo, true);
+        }
+
+        return $x . '</row>';
+    }
+
+    private static function celula(string $ref, mixed $v, int $estilo, bool $vazioComEstilo): string
+    {
+        $s = $estilo > 0 ? " s=\"{$estilo}\"" : '';
+        if ($v === null || $v === '') {
+            return $vazioComEstilo && $estilo > 0 ? "<c r=\"{$ref}\"{$s}/>" : '';
+        }
+        if (is_bool($v)) {
+            return "<c r=\"{$ref}\"{$s} t=\"b\"><v>" . ($v ? 1 : 0) . '</v></c>';
+        }
+        if ((is_int($v) || is_float($v)) && is_finite((float) $v)) {
+            return "<c r=\"{$ref}\"{$s}><v>" . self::numero($v) . '</v></c>';
+        }
+
+        // texto sempre como texto: codigo nao vira numero e "=..." nao vira formula
+        return "<c r=\"{$ref}\"{$s} t=\"inlineStr\"><is><t xml:space=\"preserve\">" . self::xml((string) $v) . '</t></is></c>';
+    }
+
+    private static function numero(int|float $v): string
+    {
+        if (is_int($v)) {
+            return (string) $v;
+        }
+        $s = rtrim(rtrim(sprintf('%.10F', $v), '0'), '.');
+
+        return $s === '-0' ? '0' : $s;
+    }
+
+    private static function xml(string $s): string
+    {
+        $s = mb_substr($s, 0, 32767);
+        $s = (string) preg_replace('/[^\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]/u', '', $s);
+
+        return htmlspecialchars($s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    }
+
+    /** 0 -> A, 26 -> AA */
+    public static function col(int $i): string
+    {
+        $s = '';
+        for ($i++; $i > 0; $i = intdiv($i - 1, 26)) {
+            $s = chr(65 + ($i - 1) % 26) . $s;
+        }
+
+        return $s;
+    }
+
+    /** @param list<string> $usados */
+    private static function nomeAba(string $nome, array $usados): string
+    {
+        $base = mb_substr(str_replace(['\\', '/', '?', '*', '[', ']', ':'], '_', $nome), 0, 31);
+        $n = $base;
+        for ($k = 2; in_array($n, $usados, true); $k++) {
+            $n = mb_substr($base, 0, 28) . " {$k}";
+        }
+
+        return $n;
+    }
+
+    /**
+     * @param list<string> $nomes
+     * @param array<int, ?string> $filtros
+     */
+    private function workbook(array $nomes, array $filtros): string
+    {
+        $sheets = '';
+        $def = '';
+        foreach ($nomes as $i => $nome) {
+            $id = $i + 1;
+            $nx = self::xml($nome);
+            $sheets .= "<sheet name=\"{$nx}\" sheetId=\"{$id}\" r:id=\"rId{$id}\"/>";
+            if (($filtros[$i] ?? null) !== null) {
+                $faixa = preg_replace('/([A-Z]+)(\d+)/', '\$$1\$$2', $filtros[$i]);
+                $def .= "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{$i}\" hidden=\"1\">'"
+                    . self::xml(str_replace("'", "''", $nome)) . "'!{$faixa}</definedName>";
+            }
+        }
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<workbook xmlns="' . self::NS . '" xmlns:r="' . self::NS_R . '">'
+            . '<bookViews><workbookView activeTab="0"/></bookViews>'
+            . "<sheets>{$sheets}</sheets>"
+            . ($def !== '' ? "<definedNames>{$def}</definedNames>" : '')
+            . '</workbook>';
+    }
+
+    private function relacoes(int $n): string
+    {
+        $x = '';
+        for ($i = 1; $i <= $n; $i++) {
+            $x .= "<Relationship Id=\"rId{$i}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{$i}.xml\"/>";
+        }
+        $s = $n + 1;
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' . $x
+            . "<Relationship Id=\"rId{$s}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+            . '</Relationships>';
+    }
+
+    private function tipos(int $n): string
+    {
+        $x = '';
+        for ($i = 1; $i <= $n; $i++) {
+            $x .= "<Override PartName=\"/xl/worksheets/sheet{$i}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>";
+        }
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            . '<Default Extension="xml" ContentType="application/xml"/>'
+            . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            . '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            . $x . '</Types>';
     }
 
     /** Branco sobre chip escuro, preto sobre chip claro. */

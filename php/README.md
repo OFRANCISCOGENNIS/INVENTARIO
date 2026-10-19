@@ -42,7 +42,9 @@ php -S 127.0.0.1:8000 -t public
 ```
 
 Abra `http://127.0.0.1:8000`, envie as bases (e, se quiser, a base de preços) e veja o
-relatório em guias, com botões para baixar o XLSX e o JSON. Em produção, aponte o
+relatório em guias, com botões para baixar o XLSX e o JSON. Cada tabela da página mostra até
+500 linhas; o XLSX traz todas. Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo: uma base de
+30 mil linhas leva cerca de 10 s e cabe nos 512 MB do plano gratuito do Render. Em produção, aponte o
 servidor web para `public/` e mantenha `storage/` fora da raiz pública.
 
 ### Publicar o site na internet (Render)

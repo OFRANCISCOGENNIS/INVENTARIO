@@ -11,6 +11,9 @@ use Inventario\Application\Relatorio\Relatorio;
 /** Desenha o Relatorio como HTML com uma guia por aba. */
 final class RenderizadorHtml
 {
+    /** Linhas desenhadas por tabela; o resto fica no Excel (paginas enormes travam o navegador). */
+    public const MAX_LINHAS = 500;
+
     /** @param array<string, string> $downloads rotulo => url */
     public function relatorio(Relatorio $r, array $downloads = []): string
     {
@@ -57,7 +60,7 @@ final class RenderizadorHtml
             $h .= '<th>' . Html::e($c) . '</th>';
         }
         $h .= '</tr></thead><tbody>';
-        foreach ($b->linhas as $l) {
+        foreach (array_slice($b->linhas, 0, self::MAX_LINHAS) as $l) {
             $cor = $b->corDaLinha($l);
             $h .= '<tr' . ($cor ? ' style="background:#' . Html::e($cor[0]) . '"' : '') . '>';
             foreach (array_values($l) as $i => $v) {
@@ -71,6 +74,13 @@ final class RenderizadorHtml
             $h .= '</tr>';
         }
 
-        return $h . '</tbody></table></div>';
+        $h .= '</tbody></table></div>';
+        $total = count($b->linhas);
+        if ($total > self::MAX_LINHAS) {
+            $h .= '<p class="corte">Mostrando ' . number_format(self::MAX_LINHAS, 0, ',', '.') . ' de '
+                . number_format($total, 0, ',', '.') . ' linhas. Baixe o XLSX para ver todas.</p>';
+        }
+
+        return $h;
     }
 }
