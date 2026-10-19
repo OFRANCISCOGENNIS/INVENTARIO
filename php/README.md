@@ -45,6 +45,20 @@ Abra `http://127.0.0.1:8000`, envie as bases (e, se quiser, a base de preços) e
 relatório em guias, com botões para baixar o XLSX e o JSON. Em produção, aponte o
 servidor web para `public/` e mantenha `storage/` fora da raiz pública.
 
+### Publicar o site na internet (Render)
+
+O repositório já tem `render.yaml` (na raiz) e `php/Dockerfile`:
+
+1. Crie uma conta em https://render.com entrando com o GitHub.
+2. **New → Blueprint**, escolha o repositório `INVENTARIO` e confirme.
+3. Quando pedir `INVENTARIO_SENHA`, digite uma senha. O site passa a pedir usuário
+   `inventario` e essa senha (mude o usuário com a variável `INVENTARIO_USUARIO`).
+4. Ao terminar o deploy, o Render mostra o endereço (`https://analise-inventario-xxxx.onrender.com`).
+
+No plano gratuito o site "dorme" sem uso (o primeiro acesso demora ~1 min) e o disco é
+apagado a cada novo deploy: `config.json`, equivalências e histórico voltam ao padrão.
+Para guardá-los, adicione um disco persistente (plano pago) montado em `/var/www/app/storage`.
+
 ### Pasta de dados
 
 Padrão `php/storage` (ou a variável `INVENTARIO_DADOS`):

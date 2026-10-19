@@ -24,6 +24,9 @@ final class ControladorWeb
 
     public function tratar(): void
     {
+        if (!$this->autorizado()) {
+            return;
+        }
         if (session_status() !== PHP_SESSION_ACTIVE) {
             session_start();
         }
@@ -110,6 +113,28 @@ final class ControladorWeb
         $this->limpar($tmp);
 
         return [$html, $erros];
+    }
+
+    /**
+     * Com a variavel INVENTARIO_SENHA definida (site publicado na internet), pede
+     * usuario/senha do navegador. Sem ela (uso local), entra direto.
+     */
+    private function autorizado(): bool
+    {
+        $senha = (string) getenv('INVENTARIO_SENHA');
+        if ($senha === '') {
+            return true;
+        }
+        $usuario = (string) (getenv('INVENTARIO_USUARIO') ?: 'inventario');
+        if (hash_equals($usuario, (string) ($_SERVER['PHP_AUTH_USER'] ?? ''))
+            && hash_equals($senha, (string) ($_SERVER['PHP_AUTH_PW'] ?? ''))) {
+            return true;
+        }
+        header('WWW-Authenticate: Basic realm="Analise de Inventario", charset="UTF-8"');
+        http_response_code(401);
+        echo 'Acesso restrito.';
+
+        return false;
     }
 
     private function baixar(string $arq): void
