@@ -252,6 +252,19 @@
     return rows;
   }
 
+  // contagem por status da base inteira ou de uma obra; guardada por analise
+  function contagem(a, obra) {
+    a._cnt = a._cnt || {};
+    var k = obra || '\u0000';
+    if (a._cnt[k]) return a._cnt[k];
+    var c = { ok: 0, ver: 0, div: 0, sem: 0, fora: 0, liq: 0, total: 0 };
+    a.linhas.forEach(function (x) {
+      if (obra && x.pep3 !== obra) return;
+      c.total++; c[x.status]++; if (x.priceFlag === 'fora') c.fora++; c.liq += x.valor || 0;
+    });
+    return (a._cnt[k] = c);
+  }
+
   function prepararResultados() {
     var r = s.res;
     var modoTxt = r.modo === 'juntar' ? 'Juntar bases' : r.modo === 'separar' ? 'Separar bases' : 'Análise única';
@@ -294,23 +307,23 @@
     $('aviso').innerHTML = avisos.map(function (t) { return '<div>' + esc(t) + '</div>'; }).join('');
 
     var esc0 = linhasEscopo(), rows = filtradas();
-    if (!a._cnt) {
-      a._cnt = { ok: 0, ver: 0, div: 0, sem: 0, fora: 0, liq: 0 };
-      esc0.forEach(function (x) { a._cnt[x.status]++; if (x.priceFlag === 'fora') a._cnt.fora++; a._cnt.liq += x.valor || 0; });
-    }
-    var cnt = function (k) { return a._cnt[k]; };
-    var pct = function (n) { return esc0.length ? (n / esc0.length * 100).toFixed(1).replace('.', ',') + '% do total' : ''; };
-    var liq = a._cnt.liq;
+    // com uma obra selecionada, os contadores de status passam a ser os da obra
+    var co = contagem(a, s.obra), base = s.obra ? co.total : esc0.length;
+    var cnt = function (k) { return co[k]; };
+    var pct = function (n) { return base ? (n / base * 100).toFixed(1).replace('.', ',') + (s.obra ? '% da obra' : '% do total') : ''; };
+    var liq = co.liq;
 
     var k = $('kpis'); k.innerHTML = '';
-    k.appendChild(kpi('Registros analisados', fN(esc0.length), r.analises.length > 1 ? 'Nesta base' : r.arquivos.length + (r.arquivos.length > 1 ? ' bases' : ' base'), '#17365D'));
+    k.appendChild(s.obra
+      ? kpi('Registros da obra', fN(co.total), 'Obra ' + s.obra + ' · de ' + fN(esc0.length) + ' registros', '#17365D')
+      : kpi('Registros analisados', fN(esc0.length), r.analises.length > 1 ? 'Nesta base' : r.arquivos.length + (r.arquivos.length > 1 ? ' bases' : ' base'), '#17365D'));
     k.appendChild(kpi('Não aderentes', fN(cnt('div')), pct(cnt('div')), ST.div.dot, 'div'));
     k.appendChild(kpi('Sem correspondência', fN(cnt('sem')), pct(cnt('sem')), ST.sem.dot, 'sem'));
     k.appendChild(kpi('Verificar', fN(cnt('ver')), pct(cnt('ver')), ST.ver.dot, 'ver'));
     k.appendChild(kpi('Aderentes', fN(cnt('ok')), pct(cnt('ok')), ST.ok.dot, 'ok'));
     k.appendChild(kpi('Obras reprovadas', fN(a.obras.reprovadas), 'de ' + fN(a.obras.total) + ' obras · ver ranking', '#B91C1C', function () { irSecao('ranking'); }));
     k.appendChild(kpi('Alertas críticos', fN(a.alertas), a.notaBase == null ? 'Ver alertas' : 'Saúde da base: ' + fN(a.notaBase) + ' · ver alertas', '#D97706', function () { irSecao('alertas'); }));
-    if (a.temPrecos) k.appendChild(kpi('Fora da faixa MIN/MAX', fN(a._cnt.fora), 'Base de preços', ST.ver.dot));
+    if (a.temPrecos) k.appendChild(kpi('Fora da faixa MIN/MAX', fN(co.fora), 'Base de preços', ST.ver.dot));
     k.appendChild(kpi('Valor líquido das diferenças', fBRL(liq), 'PRJ − SAP', liq < 0 ? ST.div.dot : '#16A34A'));
 
     var chip = function (chave, rotulo, n, campo) {
@@ -327,13 +340,17 @@
       cob.addEventListener('click', function () { s.obra = ''; s.pagina = 0; desenharResultados(); });
       ch.appendChild(cob);
     }
-    [['todos', 'Todos', esc0.length], ['div', 'Não aderente', cnt('div')], ['sem', 'Sem correspondência', cnt('sem')],
+    [['todos', 'Todos', base], ['div', 'Não aderente', cnt('div')], ['sem', 'Sem correspondência', cnt('sem')],
       ['ver', 'Verificar', cnt('ver')], ['ok', 'Aderente', cnt('ok')]].forEach(function (c) { ch.appendChild(chip(c[0], c[1], c[2], 'sf')); });
     var cp = $('chips-preco'); cp.innerHTML = ''; cp.hidden = !a.temPrecos;
     if (a.temPrecos) [['todas', 'Todos os preços'], ['fora', 'Fora da faixa'], ['dentro', 'Dentro da faixa']].forEach(function (c) { cp.appendChild(chip(c[0], c[1], '', 'pf')); });
 
-    $('exp-filtrados').textContent = 'Exportar filtrados (' + fN(rows.length) + ') · CSV';
-    $('exp-todos').textContent = 'Exportar todos (' + fN(esc0.length) + ')';
+    var nExp = s.secao === 'alertas' ? [alertasFiltrados(a).length, a.alertasLista.length]
+      : s.secao === 'ranking' ? [rankingFiltrado(a).length, a.ranking.length] : [rows.length, esc0.length];
+    var rot = s.secao === 'alertas' ? ['Exportar alertas filtrados', 'Exportar todos os alertas']
+      : s.secao === 'ranking' ? ['Exportar obras filtradas', 'Exportar todas as obras'] : ['Exportar filtrados', 'Exportar todos'];
+    $('exp-filtrados').textContent = rot[0] + ' (' + fN(nExp[0]) + ') · CSV';
+    $('exp-todos').textContent = rot[1] + ' (' + fN(nExp[1]) + ')';
     var dl = $('res-downloads'); dl.innerHTML = '';
     Object.keys(a.downloads || {}).forEach(function (rot) {
       var l = el('a', 'btn-secundario', 'Relatório completo · ' + esc(rot)); l.href = a.downloads[rot]; dl.appendChild(l);
@@ -344,7 +361,6 @@
     $('n-ranking').textContent = fN(a.ranking.length);
     document.querySelectorAll('.secao').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.secao === s.secao)); });
     ['itens', 'alertas', 'ranking'].forEach(function (x) { $('sec-' + x).hidden = x !== s.secao; });
-    $('exp-filtrados').hidden = $('exp-todos').hidden = s.secao !== 'itens';
     if (s.secao === 'itens') desenharTabela(a, rows);
     else if (s.secao === 'alertas') desenharAlertas(a);
     else desenharRanking(a);
@@ -443,8 +459,25 @@
     t.appendChild(el('div', 'vazio-tabela', '<div class="vazio-titulo">' + esc(texto) + '</div><div class="vazio-sub">Ajuste a pesquisa ou os filtros aplicados.</div>'));
   }
 
+  function alertasFiltrados(a) {
+    var qq = s.qa.trim().toLowerCase();
+    return a.alertasLista.filter(function (x) {
+      if (s.ta !== 'todos' && x.tipo !== s.ta) return false;
+      if (!qq) return true;
+      if (x._q === undefined) x._q = (x.tipo + ' ' + x.pep3 + ' ' + x.pep4 + ' ' + x.code + ' ' + x.desc + ' ' + x.motivo).toLowerCase();
+      return x._q.indexOf(qq) >= 0;
+    });
+  }
+
+  function rankingFiltrado(a) {
+    var qq = s.qr.trim().toLowerCase();
+    return a.ranking.filter(function (o) {
+      return (s.rr === 'todos' || o.risco === s.rr) && (!qq || (o.pep3 + ' ' + o.diag).toLowerCase().indexOf(qq) >= 0);
+    });
+  }
+
   function desenharAlertas(a) {
-    var lista = a.alertasLista, qq = s.qa.trim().toLowerCase();
+    var lista = a.alertasLista;
     var porTipo = {};
     lista.forEach(function (x) { porTipo[x.tipo] = (porTipo[x.tipo] || 0) + 1; });
     var tipos = Object.keys(porTipo).sort(function (x, y) { return porTipo[y] - porTipo[x]; });
@@ -452,15 +485,10 @@
     [['todos', 'Todos', lista.length]].concat(tipos.map(function (t) { return [t, t, porTipo[t]]; })).forEach(function (c) {
       var b = el('button', 'chip'); b.type = 'button'; b.setAttribute('aria-pressed', String(s.ta === c[0]));
       b.innerHTML = (c[0] !== 'todos' ? '<span class="ponto" style="opacity:1;background:' + (COR_ALERTA[c[0]] || '#787878') + '"></span>' : '') + esc(c[1]) + '<span>' + fN(c[2]) + '</span>';
-      b.addEventListener('click', function () { s.ta = c[0]; s.pa = 0; s.abertoA = null; desenharAlertas(a); });
+      b.addEventListener('click', function () { s.ta = c[0]; s.pa = 0; s.abertoA = null; desenharResultados(); });
       ch.appendChild(b);
     });
-    var rows = lista.filter(function (x) {
-      if (s.ta !== 'todos' && x.tipo !== s.ta) return false;
-      if (!qq) return true;
-      if (x._q === undefined) x._q = (x.tipo + ' ' + x.pep3 + ' ' + x.pep4 + ' ' + x.code + ' ' + x.desc + ' ' + x.motivo).toLowerCase();
-      return x._q.indexOf(qq) >= 0;
-    });
+    var rows = alertasFiltrados(a);
     var cols = '236px 104px 128px 96px minmax(140px,1fr) 100px 56px 96px minmax(240px,2fr)';
     var t = $('tabela-alertas'); t.innerHTML = ''; t.style.minWidth = '1210px';
     var cab = el('div', 'lin lin-cab'); cab.style.gridTemplateColumns = cols; cab.setAttribute('role', 'row');
@@ -486,19 +514,17 @@
   }
 
   function desenharRanking(a) {
-    var lista = a.ranking, qq = s.qr.trim().toLowerCase();
+    var lista = a.ranking;
     var porRisco = { ALTO: 0, MEDIO: 0, BAIXO: 0, OK: 0 };
     lista.forEach(function (o) { porRisco[o.risco] = (porRisco[o.risco] || 0) + 1; });
     var ch = $('chips-ranking'); ch.innerHTML = '';
     [['todos', 'Todos', lista.length], ['ALTO', 'Risco alto', porRisco.ALTO], ['MEDIO', 'Médio', porRisco.MEDIO], ['BAIXO', 'Baixo', porRisco.BAIXO], ['OK', 'Sem apontamento', porRisco.OK]].forEach(function (c) {
       var b = el('button', 'chip'); b.type = 'button'; b.setAttribute('aria-pressed', String(s.rr === c[0]));
       b.innerHTML = esc(c[1]) + '<span>' + fN(c[2]) + '</span>';
-      b.addEventListener('click', function () { s.rr = c[0]; s.pr = 0; desenharRanking(a); });
+      b.addEventListener('click', function () { s.rr = c[0]; s.pr = 0; desenharResultados(); });
       ch.appendChild(b);
     });
-    var rows = lista.filter(function (o) {
-      return (s.rr === 'todos' || o.risco === s.rr) && (!qq || (o.pep3 + ' ' + o.diag).toLowerCase().indexOf(qq) >= 0);
-    });
+    var rows = rankingFiltrado(a);
     // divergencias de preco, sobrepreco e COM fora ja aparecem escritos no diagnostico
     var cols = '48px minmax(130px,1fr) 124px 128px 72px 160px 84px minmax(280px,2.2fr)';
     var t = $('tabela-ranking'); t.innerHTML = ''; t.style.minWidth = '1040px';
@@ -589,8 +615,8 @@
   $('anterior').addEventListener('click', function () { s.pagina = Math.max(0, s.pagina - 1); desenharResultados(); });
   $('proxima').addEventListener('click', function () { s.pagina += 1; desenharResultados(); });
   $('fechar-banner').addEventListener('click', function () { s.banner = false; desenharResultados(); });
-  $('exp-filtrados').addEventListener('click', function () { exportar(filtradas(), 'filtrados'); });
-  $('exp-todos').addEventListener('click', function () { exportar(linhasEscopo(), 'todos'); });
+  $('exp-filtrados').addEventListener('click', function () { exportarSecao(true); });
+  $('exp-todos').addEventListener('click', function () { exportarSecao(false); });
 
   // guias do relatorio completo
   $('relatorio').addEventListener('click', function (ev) {
@@ -601,24 +627,55 @@
     var alvo = rel.querySelector('#' + b.dataset.alvo); if (alvo) alvo.classList.add('ativo');
   });
 
-  function exportar(rows, sufixo) {
-    var a = analise(); var mm = a.temPrecos;
-    var c = function (v) { v = v == null ? '' : String(v); return /[;"\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var n = function (v) { return v == null ? '' : String(v).replace('.', ','); };
-    // texto comecando com = + - @ vira formula no Excel: prefixa apostrofo
-    var t = function (v) { v = v == null ? '' : String(v); return c(/^[=+\-@]/.test(v) ? "'" + v : v); };
-    var cab = ['Material', 'Descrição', 'Base', 'PEP3', 'PEP4', 'Tipo', 'Família', 'Unidade', 'Qtd SAP', 'Qtd PRJ', 'Diferença', 'Preço unitário', 'Valor diferença']
-      .concat(mm ? ['Preço MIN', 'Preço MAX', 'Faixa MIN/MAX'] : []).concat(['SIT MAT', 'Status', 'Aprovação', 'Motivo']);
-    var linhas = [cab.map(c).join(';')].concat(rows.map(function (r) {
-      return ['="' + r.code.replace(/"/g, '') + '"', t(r.desc), t(r.base), t(r.pep3), t(r.pep4), t(r.tipo), t(r.familia), t(r.un), n(r.qSap), n(r.qPrj), n(r.diff),
-        n(r.price == null ? null : Math.round(r.price * 100) / 100), n(r.valor)]
-        .concat(mm ? [n(r.mn), n(r.mx), r.priceFlag === 'fora' ? 'Fora da faixa' : r.priceFlag === 'dentro' ? 'Dentro da faixa' : ''] : [])
-        .concat([t(r.sit), ST[r.status].label, r.aprovacao, t(r.motivo)]).join(';');
-    }));
-    var blob = new Blob(['﻿' + linhas.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  // o CSV segue a secao aberta: itens, alertas ou ranking
+  function exportarSecao(soFiltrados) {
+    var a = analise(), suf = soFiltrados ? 'filtrados' : 'todos';
+    if (s.secao === 'alertas') exportarAlertas(soFiltrados ? alertasFiltrados(a) : a.alertasLista, 'alertas-' + suf);
+    else if (s.secao === 'ranking') exportarRanking(soFiltrados ? rankingFiltrado(a) : a.ranking, 'ranking-' + suf);
+    else exportar(soFiltrados ? filtradas() : linhasEscopo(), suf);
+  }
+
+  var csvC = function (v) { v = v == null ? '' : String(v); return /[;"\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  var csvN = function (v) { return v == null ? '' : String(v).replace('.', ','); };
+  // texto comecando com = + - @ vira formula no Excel: prefixa apostrofo
+  var csvT = function (v) { v = v == null ? '' : String(v); return csvC(/^[=+\-@]/.test(v) ? "'" + v : v); };
+  var csvCod = function (v) { return v == null || v === '' ? '' : '="' + String(v).replace(/"/g, '') + '"'; };
+
+  function baixarCsv(cab, linhas, sufixo) {
+    var blob = new Blob(['\ufeff' + [cab.map(csvC).join(';')].concat(linhas.map(function (l) { return l.join(';'); })).join('\r\n')], { type: 'text/csv;charset=utf-8' });
     var url = URL.createObjectURL(blob); var e = document.createElement('a');
     e.href = url; e.download = 'analise-inventario-' + sufixo + '.csv'; document.body.appendChild(e); e.click(); e.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function exportarAlertas(rows, sufixo) {
+    baixarCsv(['Tipo', 'Obra (PEP3)', 'PEP4', 'Material', 'Descrição', 'Família', 'Valor', 'Qtd', 'Preço unitário', 'Referência', 'Motivo'],
+      rows.map(function (x) {
+        return [csvT(x.tipo), csvT(x.pep3), csvT(x.pep4), csvCod(x.code), csvT(x.desc), csvT(x.familia), csvN(x.valor), csvN(x.qtd),
+          csvN(x.pu == null ? null : Math.round(x.pu * 100) / 100), typeof x.ref === 'number' ? csvN(x.ref) : csvT(x.ref), csvT(x.motivo)];
+      }), sufixo);
+  }
+
+  function exportarRanking(rows, sufixo) {
+    baixarCsv(['#', 'Obra (PEP3)', 'Valor da obra', 'Situação', 'Alertas', 'Diverg. preço', 'Sobrepreço R$', 'COM fora NT.006',
+      'Discrepâncias de valor', 'Score', 'Risco', 'Diagnóstico'],
+      rows.map(function (o) {
+        return [o.pos, csvT(o.pep3), csvN(o.valor), o.reprovado ? 'REPROVADO' : 'APROVADO', o.alertas, o.divPreco, csvN(Math.round(o.sobrepreco * 100) / 100),
+          o.comFora, o.discrep || 0, csvN(o.score), o.risco, csvT(o.diag)];
+      }), sufixo);
+  }
+
+  function exportar(rows, sufixo) {
+    var a = analise(); var mm = a.temPrecos;
+    var c = csvC, n = csvN, t = csvT;
+    var cab = ['Material', 'Descrição', 'Base', 'PEP3', 'PEP4', 'Tipo', 'Família', 'Unidade', 'Qtd SAP', 'Qtd PRJ', 'Diferença', 'Preço unitário', 'Valor diferença']
+      .concat(mm ? ['Preço MIN', 'Preço MAX', 'Faixa MIN/MAX'] : []).concat(['SIT MAT', 'Status', 'Aprovação', 'Motivo']);
+    baixarCsv(cab, rows.map(function (r) {
+      return [csvCod(r.code), t(r.desc), t(r.base), t(r.pep3), t(r.pep4), t(r.tipo), t(r.familia), t(r.un), n(r.qSap), n(r.qPrj), n(r.diff),
+        n(r.price == null ? null : Math.round(r.price * 100) / 100), n(r.valor)]
+        .concat(mm ? [n(r.mn), n(r.mx), r.priceFlag === 'fora' ? 'Fora da faixa' : r.priceFlag === 'dentro' ? 'Dentro da faixa' : ''] : [])
+        .concat([t(r.sit), ST[r.status].label, r.aprovacao, t(r.motivo)]);
+    }), sufixo);
   }
 
   ir('nova'); desenharNova();
