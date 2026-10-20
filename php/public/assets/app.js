@@ -15,8 +15,22 @@
 
   var s = {
     view: 'nova', arquivos: [], modo: 'juntar', precos: null, ocupado: false, erro: '',
-    res: null, aba: 0, q: '', sf: 'todos', pf: 'todas', ordem: 'status', dir: 'asc', pagina: 0, aberto: null
+    res: null, aba: 0, q: '', sf: 'todos', pf: 'todas', ordem: 'status', dir: 'asc', pagina: 0, aberto: null,
+    obra: '', secao: 'itens', qa: '', ta: 'todos', pa: 0, abertoA: null, qr: '', rr: 'todos', pr: 0
   };
+  // cor do chip por tipo de alerta (mesma paleta do relatorio XLSX)
+  var COR_ALERTA = {
+    'ODI SEM UC': '#D69E00', 'PEP SEM UC': '#C45911', 'ODI SEM COM': '#2E75B6', 'PU ABAIXO MIN': '#B07C00',
+    'PU ACIMA MAX': '#C00000', 'MATERIAL NEGATIVO': '#C00000', 'MATERIAL POSITIVO EM ODD': '#D66300',
+    'LACRE x MEDIDOR': '#6040C4', 'POSTE EM PEP .M': '#1F6BB7', 'POSTE EM PEP .S': '#0F8273',
+    'UC SUBVALORIZADO': '#C00000', 'UC - PRECO NAO ENCONTRADO': '#B07C00', 'UC - COD MATERIAL VAZIO': '#6E6E6E',
+    'PU BAIXO EM ODI': '#BE185D', 'PU 0,01 EM CABO/COND': '#C2410C', 'ODD VALOR ABAIXO DO LIMITE': '#991B1B',
+    'POSTE ODI PU BAIXO': '#3730A3', 'MEDIDOR EM PEP ODI': '#6D28D9', 'QUALIDADE DA BASE - CRITICO': '#C00000',
+    'QUALIDADE DA BASE': '#B07C00'
+  };
+  var RISCO = { ALTO: { cls: 'alto', cor: '#DC2626' }, MEDIO: { cls: 'medio', cor: '#D97706' }, BAIXO: { cls: 'baixo', cor: '#2563EB' }, OK: { cls: 'okr', cor: '#16A34A' } };
+  var colar = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+  var cacheFiltro = { chave: null, rows: [] };
   var uid = 0;
   var $ = function (id) { return document.getElementById(id); };
   var csrf = (document.querySelector('meta[name="csrf"]') || {}).content || '';
@@ -151,40 +165,74 @@
     fd.append('modo', s.modo);
     s.ocupado = true; s.erro = ''; s.erroCampo = ''; desenharNova();
 
-    fetch('?api=analisar', { method: 'POST', body: fd, headers: { 'X-CSRF': csrf }, credentials: 'same-origin' })
-      .then(function (r) {
-        return r.text().then(function (t) {
-          var j = null;
-          try { j = JSON.parse(t); } catch (e) { /* resposta nao-JSON: erro do servidor */ }
-          if (!j) throw new Error(r.status === 413 ? 'Os arquivos passam do limite de envio do servidor.' :
-            'O servidor não respondeu como esperado (HTTP ' + r.status + '). Se a base for muito grande, tente de novo em instantes.');
-          if (j.erro) throw new Error(j.erro);
-          return j;
-        });
-      })
-      .then(function (j) {
+    // XHR em vez de fetch: so ele informa o progresso do envio dos arquivos
+    var xhr = new XMLHttpRequest();
+    var inicio = Date.now(), relogio = null;
+    var barra = $('progresso'), preench = $('progresso-barra');
+    var fase = function (txt, pct) {
+      $('executar').innerHTML = '<span class="giro" aria-hidden="true"></span>' + esc(txt);
+      barra.hidden = false;
+      barra.classList.toggle('indeterminado', pct == null);
+      preench.style.width = pct == null ? '' : pct + '%';
+    };
+    xhr.open('POST', '?api=analisar');
+    xhr.setRequestHeader('X-CSRF', csrf);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) fase('Enviando os arquivos... ' + Math.round(e.loaded / e.total * 100) + '%', Math.round(e.loaded / e.total * 100));
+    };
+    xhr.upload.onload = function () {
+      fase('Analisando as bases...', null);
+      relogio = setInterval(function () {
+        fase('Analisando as bases... ' + Math.round((Date.now() - inicio) / 1000) + ' s', null);
+      }, 1000);
+    };
+    var fim = function () { clearInterval(relogio); barra.hidden = true; };
+    xhr.onload = function () {
+      fim();
+      var j = null;
+      try { j = JSON.parse(xhr.responseText); } catch (e) { /* resposta nao-JSON: erro do servidor */ }
+      if (!j || j.erro) {
         s.ocupado = false;
-        s.res = j; s.aba = 0; s.q = ''; s.sf = 'todos'; s.pf = 'todas'; s.pagina = 0; s.aberto = null; s.banner = true;
-        $('busca').value = '';
-        desenharNova(); prepararResultados(); ir('resultados');
-      })
-      .catch(function (e) {
-        s.ocupado = false;
-        s.erro = e && e.message ? e.message : 'Falha de conexão com o servidor. Verifique a rede e tente novamente.';
-        if (e instanceof TypeError) s.erro = 'Falha de conexão com o servidor. Verifique a rede e tente novamente.';
+        s.erro = j && j.erro ? j.erro : xhr.status === 413 ? 'Os arquivos passam do limite de envio do servidor.' :
+          'O servidor não respondeu como esperado (HTTP ' + xhr.status + '). Se a base for muito grande, tente de novo em instantes.';
         desenharNova();
-      });
+        return;
+      }
+      s.ocupado = false;
+      s.res = j; s.aba = 0; s.banner = true; s.duracao = Math.round((Date.now() - inicio) / 100) / 10;
+      limparFiltros();
+      desenharNova(); prepararResultados(); ir('resultados');
+    };
+    xhr.onerror = function () {
+      fim();
+      s.ocupado = false;
+      s.erro = 'Falha de conexão com o servidor. Verifique a rede e tente novamente.';
+      desenharNova();
+    };
+    xhr.send(fd);
+    fase('Enviando os arquivos... 0%', 0);
+  }
+
+  function limparFiltros() {
+    s.q = ''; s.sf = 'todos'; s.pf = 'todas'; s.obra = ''; s.pagina = 0; s.aberto = null; s.secao = 'itens';
+    s.qa = ''; s.ta = 'todos'; s.pa = 0; s.abertoA = null; s.qr = ''; s.rr = 'todos'; s.pr = 0;
+    ['busca', 'busca-alertas', 'busca-ranking'].forEach(function (id) { $(id).value = ''; });
+    cacheFiltro.chave = null;
   }
 
   // ---------- resultados ----------
   function analise() { return s.res ? s.res.analises[s.aba] : null; }
   function linhasEscopo() { var a = analise(); return a ? a.linhas : []; }
+  // filtrar + ordenar 30 mil linhas a cada clique pesava: o resultado fica em cache
+  // ate mudar a base, a pesquisa, um filtro ou a ordenacao
   function filtradas() {
+    var chave = [s.aba, s.q, s.sf, s.pf, s.obra, s.ordem, s.dir].join('\u0001');
+    if (cacheFiltro.chave === chave) return cacheFiltro.rows;
     var qq = s.q.trim().toLowerCase();
     var rows = linhasEscopo().filter(function (r) {
+      if (r._q === undefined) r._q = (r.code + ' ' + r.desc + ' ' + r.base + ' ' + r.pep4 + ' ' + r.pep3).toLowerCase();
       return (s.sf === 'todos' || r.status === s.sf) && (s.pf === 'todas' || r.priceFlag === s.pf) &&
-        (!qq || r.code.toLowerCase().indexOf(qq) >= 0 || r.desc.toLowerCase().indexOf(qq) >= 0 ||
-          r.base.toLowerCase().indexOf(qq) >= 0 || r.pep4.toLowerCase().indexOf(qq) >= 0 || r.pep3.toLowerCase().indexOf(qq) >= 0);
+        (!s.obra || r.pep3 === s.obra) && (!qq || r._q.indexOf(qq) >= 0);
     });
     var val = function (r) {
       if (s.ordem === 'status') return ST[r.status].ord;
@@ -192,14 +240,16 @@
       return r[s.ordem];
     };
     var d = s.dir === 'asc' ? 1 : -1;
-    return rows.slice().sort(function (a, b) {
+    rows.sort(function (a, b) {
       var x = val(a), y = val(b);
       if (x == null && y == null) return 0;
       if (x == null) return 1;
       if (y == null) return -1;
-      var c = typeof x === 'string' ? x.localeCompare(y, 'pt-BR') : x - y;
+      var c = typeof x === 'string' ? colar.compare(x, y) : x - y;
       return c * d || Math.abs(b.valor || 0) - Math.abs(a.valor || 0);
     });
+    cacheFiltro = { chave: chave, rows: rows };
+    return rows;
   }
 
   function prepararResultados() {
@@ -212,7 +262,7 @@
     tabs.hidden = r.analises.length < 2;
     r.analises.forEach(function (a, i) {
       var b = el('button', 'aba-base'); b.type = 'button'; b.setAttribute('role', 'tab'); b.textContent = a.base;
-      b.addEventListener('click', function () { s.aba = i; s.pagina = 0; s.aberto = null; desenharResultados(); });
+      b.addEventListener('click', function () { s.aba = i; s.pagina = 0; s.aberto = null; s.pa = 0; s.pr = 0; desenharResultados(); });
       tabs.appendChild(b);
     });
     desenharResultados();
@@ -220,7 +270,9 @@
 
   function kpi(rotulo, valor, sub, cor, chave) {
     var b = el(chave ? 'button' : 'div', 'kpi');
-    if (chave) {
+    if (typeof chave === 'function') {
+      b.type = 'button'; b.classList.add('atalho'); b.addEventListener('click', chave);
+    } else if (chave) {
       b.type = 'button'; b.setAttribute('aria-pressed', String(s.sf === chave));
       b.addEventListener('click', function () { s.sf = s.sf === chave ? 'todos' : chave; s.pagina = 0; desenharResultados(); });
     }
@@ -236,15 +288,19 @@
     $('banner').hidden = !s.banner;
     $('banner-texto').textContent = r.analises.length > 1
       ? 'Foram geradas ' + r.analises.length + ' análises independentes — alterne entre elas pelas abas.'
-      : fN(a.linhas.length) + ' registros processados.';
+      : fN(a.linhas.length) + ' registros processados' + (s.duracao ? ' em ' + String(s.duracao).replace('.', ',') + ' s' : '') + '.';
     var avisos = (r.avisos || []).concat(a.avisos || []);
     $('aviso').hidden = !avisos.length;
     $('aviso').innerHTML = avisos.map(function (t) { return '<div>' + esc(t) + '</div>'; }).join('');
 
     var esc0 = linhasEscopo(), rows = filtradas();
-    var cnt = function (k) { return esc0.filter(function (x) { return x.status === k; }).length; };
+    if (!a._cnt) {
+      a._cnt = { ok: 0, ver: 0, div: 0, sem: 0, fora: 0, liq: 0 };
+      esc0.forEach(function (x) { a._cnt[x.status]++; if (x.priceFlag === 'fora') a._cnt.fora++; a._cnt.liq += x.valor || 0; });
+    }
+    var cnt = function (k) { return a._cnt[k]; };
     var pct = function (n) { return esc0.length ? (n / esc0.length * 100).toFixed(1).replace('.', ',') + '% do total' : ''; };
-    var liq = esc0.reduce(function (t, x) { return t + (x.valor || 0); }, 0);
+    var liq = a._cnt.liq;
 
     var k = $('kpis'); k.innerHTML = '';
     k.appendChild(kpi('Registros analisados', fN(esc0.length), r.analises.length > 1 ? 'Nesta base' : r.arquivos.length + (r.arquivos.length > 1 ? ' bases' : ' base'), '#17365D'));
@@ -252,9 +308,9 @@
     k.appendChild(kpi('Sem correspondência', fN(cnt('sem')), pct(cnt('sem')), ST.sem.dot, 'sem'));
     k.appendChild(kpi('Verificar', fN(cnt('ver')), pct(cnt('ver')), ST.ver.dot, 'ver'));
     k.appendChild(kpi('Aderentes', fN(cnt('ok')), pct(cnt('ok')), ST.ok.dot, 'ok'));
-    k.appendChild(kpi('Obras reprovadas', fN(a.obras.reprovadas), 'de ' + fN(a.obras.total) + ' obras (PEP3)', '#B91C1C'));
-    k.appendChild(kpi('Alertas críticos', fN(a.alertas), a.notaBase == null ? 'Ver relatório completo' : 'Saúde da base: ' + fN(a.notaBase), '#D97706'));
-    if (a.temPrecos) k.appendChild(kpi('Fora da faixa MIN/MAX', fN(esc0.filter(function (x) { return x.priceFlag === 'fora'; }).length), 'Base de preços', ST.ver.dot));
+    k.appendChild(kpi('Obras reprovadas', fN(a.obras.reprovadas), 'de ' + fN(a.obras.total) + ' obras · ver ranking', '#B91C1C', function () { irSecao('ranking'); }));
+    k.appendChild(kpi('Alertas críticos', fN(a.alertas), a.notaBase == null ? 'Ver alertas' : 'Saúde da base: ' + fN(a.notaBase) + ' · ver alertas', '#D97706', function () { irSecao('alertas'); }));
+    if (a.temPrecos) k.appendChild(kpi('Fora da faixa MIN/MAX', fN(a._cnt.fora), 'Base de preços', ST.ver.dot));
     k.appendChild(kpi('Valor líquido das diferenças', fBRL(liq), 'PRJ − SAP', liq < 0 ? ST.div.dot : '#16A34A'));
 
     var chip = function (chave, rotulo, n, campo) {
@@ -264,6 +320,13 @@
       return b;
     };
     var ch = $('chips'); ch.innerHTML = '';
+    if (s.obra) {
+      var cob = el('button', 'chip'); cob.type = 'button'; cob.setAttribute('aria-pressed', 'true');
+      cob.setAttribute('aria-label', 'Remover filtro da obra ' + s.obra);
+      cob.innerHTML = 'Obra ' + esc(s.obra) + ' <span aria-hidden="true">×</span>';
+      cob.addEventListener('click', function () { s.obra = ''; s.pagina = 0; desenharResultados(); });
+      ch.appendChild(cob);
+    }
     [['todos', 'Todos', esc0.length], ['div', 'Não aderente', cnt('div')], ['sem', 'Sem correspondência', cnt('sem')],
       ['ver', 'Verificar', cnt('ver')], ['ok', 'Aderente', cnt('ok')]].forEach(function (c) { ch.appendChild(chip(c[0], c[1], c[2], 'sf')); });
     var cp = $('chips-preco'); cp.innerHTML = ''; cp.hidden = !a.temPrecos;
@@ -276,17 +339,25 @@
       var l = el('a', 'btn-secundario', 'Relatório completo · ' + esc(rot)); l.href = a.downloads[rot]; dl.appendChild(l);
     });
 
-    desenharTabela(a, rows);
+    $('n-itens').textContent = fN(esc0.length);
+    $('n-alertas').textContent = fN(a.alertasLista.length);
+    $('n-ranking').textContent = fN(a.ranking.length);
+    document.querySelectorAll('.secao').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.secao === s.secao)); });
+    ['itens', 'alertas', 'ranking'].forEach(function (x) { $('sec-' + x).hidden = x !== s.secao; });
+    $('exp-filtrados').hidden = $('exp-todos').hidden = s.secao !== 'itens';
+    if (s.secao === 'itens') desenharTabela(a, rows);
+    else if (s.secao === 'alertas') desenharAlertas(a);
+    else desenharRanking(a);
     // o relatorio completo so e redesenhado quando muda a base (pode ser grande)
     if (s.relDesenhado !== a) { $('relatorio').innerHTML = a.relatorioHtml || ''; s.relDesenhado = a; }
   }
 
   function desenharTabela(a, rows) {
     var mostrarBase = a.variasBases, mm = a.temPrecos;
-    var cols = ['28px', '112px', 'minmax(180px,1.6fr)'].concat(mostrarBase ? ['minmax(130px,1fr)'] : [])
-      .concat(['minmax(120px,1fr)', '84px', '84px', '88px', '116px']).concat(mm ? ['104px'] : []).concat(['172px']).join(' ');
+    var cols = ['28px', '104px', 'minmax(160px,1.6fr)'].concat(mostrarBase ? ['minmax(130px,1fr)'] : [])
+      .concat(['minmax(110px,1fr)', '84px', '84px', '88px', '116px']).concat(mm ? ['104px'] : []).concat(['172px']).join(' ');
     var t = $('tabela'); t.innerHTML = '';
-    t.style.minWidth = (1004 + (mostrarBase ? 130 : 0) + (mm ? 104 : 0)) + 'px';
+    t.style.minWidth = (946 + (mostrarBase ? 130 : 0) + (mm ? 104 : 0)) + 'px';
 
     var seta = function (k) { return s.ordem === k ? (s.dir === 'asc' ? ' ↑' : ' ↓') : ''; };
     var cab = el('div', 'lin lin-cab'); cab.setAttribute('role', 'row'); cab.style.gridTemplateColumns = cols;
@@ -315,7 +386,7 @@
     if (!rows.length) {
       var v = el('div', 'vazio-tabela', '<div class="vazio-titulo">Nenhum registro encontrado</div><div class="vazio-sub">Ajuste a pesquisa ou os filtros aplicados.</div>');
       var lb = el('button', 'btn-secundario', 'Limpar filtros'); lb.type = 'button';
-      lb.addEventListener('click', function () { s.q = ''; $('busca').value = ''; s.sf = 'todos'; s.pf = 'todas'; s.pagina = 0; desenharResultados(); });
+      lb.addEventListener('click', function () { s.q = ''; $('busca').value = ''; s.sf = 'todos'; s.pf = 'todas'; s.obra = ''; s.pagina = 0; desenharResultados(); });
       v.appendChild(lb); t.appendChild(v);
     }
 
@@ -355,6 +426,116 @@
     $('anterior').disabled = p === 0; $('proxima').disabled = p >= paginas - 1;
   }
 
+  function irSecao(x) {
+    s.secao = x; desenharResultados();
+    $('secoes').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
+  function paginar(total, pag, ids) {
+    var paginas = Math.max(1, Math.ceil(total / PAGINA)), p = Math.min(pag, paginas - 1);
+    $(ids[0]).textContent = total ? 'Exibindo ' + fN(p * PAGINA + 1) + '–' + fN(Math.min(total, (p + 1) * PAGINA)) + ' de ' + fN(total) : '0 registros';
+    $(ids[1]).textContent = 'Página ' + (p + 1) + ' de ' + paginas;
+    $(ids[2]).disabled = p === 0; $(ids[3]).disabled = p >= paginas - 1;
+    return p;
+  }
+
+  function vazio(t, texto) {
+    t.appendChild(el('div', 'vazio-tabela', '<div class="vazio-titulo">' + esc(texto) + '</div><div class="vazio-sub">Ajuste a pesquisa ou os filtros aplicados.</div>'));
+  }
+
+  function desenharAlertas(a) {
+    var lista = a.alertasLista, qq = s.qa.trim().toLowerCase();
+    var porTipo = {};
+    lista.forEach(function (x) { porTipo[x.tipo] = (porTipo[x.tipo] || 0) + 1; });
+    var tipos = Object.keys(porTipo).sort(function (x, y) { return porTipo[y] - porTipo[x]; });
+    var ch = $('chips-alertas'); ch.innerHTML = '';
+    [['todos', 'Todos', lista.length]].concat(tipos.map(function (t) { return [t, t, porTipo[t]]; })).forEach(function (c) {
+      var b = el('button', 'chip'); b.type = 'button'; b.setAttribute('aria-pressed', String(s.ta === c[0]));
+      b.innerHTML = (c[0] !== 'todos' ? '<span class="ponto" style="opacity:1;background:' + (COR_ALERTA[c[0]] || '#787878') + '"></span>' : '') + esc(c[1]) + '<span>' + fN(c[2]) + '</span>';
+      b.addEventListener('click', function () { s.ta = c[0]; s.pa = 0; s.abertoA = null; desenharAlertas(a); });
+      ch.appendChild(b);
+    });
+    var rows = lista.filter(function (x) {
+      if (s.ta !== 'todos' && x.tipo !== s.ta) return false;
+      if (!qq) return true;
+      if (x._q === undefined) x._q = (x.tipo + ' ' + x.pep3 + ' ' + x.pep4 + ' ' + x.code + ' ' + x.desc + ' ' + x.motivo).toLowerCase();
+      return x._q.indexOf(qq) >= 0;
+    });
+    var cols = '236px 104px 128px 96px minmax(140px,1fr) 100px 56px 96px minmax(240px,2fr)';
+    var t = $('tabela-alertas'); t.innerHTML = ''; t.style.minWidth = '1210px';
+    var cab = el('div', 'lin lin-cab'); cab.style.gridTemplateColumns = cols; cab.setAttribute('role', 'row');
+    cab.innerHTML = ['Tipo', 'Obra (PEP3)', 'PEP4', 'Material', 'Descrição', 'Valor', 'Qtd', 'Preço unit.', 'Motivo'].map(function (h, i) {
+      return '<div role="columnheader"' + (i >= 5 && i <= 7 ? ' class="dir"' : '') + '>' + h + '</div>';
+    }).join('');
+    t.appendChild(cab);
+    if (!rows.length) vazio(t, 'Nenhum alerta encontrado');
+    var p = s.pa = paginar(rows.length, s.pa, ['faixa-alertas', 'pagina-alertas', 'anterior-alertas', 'proxima-alertas']);
+    rows.slice(p * PAGINA, p * PAGINA + PAGINA).forEach(function (x) {
+      var l = el('div', 'lin grupo'); l.setAttribute('role', 'row'); l.style.gridTemplateColumns = cols;
+      l.innerHTML = '<div role="cell" class="c"><span class="tipo-alerta" title="' + esc(x.tipo) + '" style="background:' + (COR_ALERTA[x.tipo] || '#787878') + '">' + esc(x.tipo) + '</span></div>' +
+        '<div role="cell" class="c c-mono" title="' + esc(x.pep3) + '">' + esc(x.pep3 || '—') + '</div>' +
+        '<div role="cell" class="c c-mono" title="' + esc(x.pep4) + '">' + esc(x.pep4 || '—') + '</div>' +
+        '<div role="cell" class="c c-cod">' + esc(x.code || '—') + '</div>' +
+        '<div role="cell" class="c" title="' + esc(x.desc) + '">' + esc(x.desc || '—') + '</div>' +
+        '<div role="cell" class="c num">' + fBRL(x.valor) + '</div>' +
+        '<div role="cell" class="c num">' + fN(x.qtd) + '</div>' +
+        '<div role="cell" class="c num">' + fBRL(x.pu) + '</div>' +
+        '<div role="cell" class="c c-motivo">' + esc(x.motivo) + '</div>';
+      t.appendChild(l);
+    });
+  }
+
+  function desenharRanking(a) {
+    var lista = a.ranking, qq = s.qr.trim().toLowerCase();
+    var porRisco = { ALTO: 0, MEDIO: 0, BAIXO: 0, OK: 0 };
+    lista.forEach(function (o) { porRisco[o.risco] = (porRisco[o.risco] || 0) + 1; });
+    var ch = $('chips-ranking'); ch.innerHTML = '';
+    [['todos', 'Todos', lista.length], ['ALTO', 'Risco alto', porRisco.ALTO], ['MEDIO', 'Médio', porRisco.MEDIO], ['BAIXO', 'Baixo', porRisco.BAIXO], ['OK', 'Sem apontamento', porRisco.OK]].forEach(function (c) {
+      var b = el('button', 'chip'); b.type = 'button'; b.setAttribute('aria-pressed', String(s.rr === c[0]));
+      b.innerHTML = esc(c[1]) + '<span>' + fN(c[2]) + '</span>';
+      b.addEventListener('click', function () { s.rr = c[0]; s.pr = 0; desenharRanking(a); });
+      ch.appendChild(b);
+    });
+    var rows = lista.filter(function (o) {
+      return (s.rr === 'todos' || o.risco === s.rr) && (!qq || (o.pep3 + ' ' + o.diag).toLowerCase().indexOf(qq) >= 0);
+    });
+    // divergencias de preco, sobrepreco e COM fora ja aparecem escritos no diagnostico
+    var cols = '48px minmax(130px,1fr) 124px 128px 72px 160px 84px minmax(280px,2.2fr)';
+    var t = $('tabela-ranking'); t.innerHTML = ''; t.style.minWidth = '1040px';
+    var cab = el('div', 'lin lin-cab'); cab.style.gridTemplateColumns = cols; cab.setAttribute('role', 'row');
+    cab.innerHTML = ['#', 'Obra (PEP3)', 'Valor da obra', 'Situação', 'Alertas', 'Score de risco', 'Risco', 'Diagnóstico'].map(function (h, i) {
+      return '<div role="columnheader"' + ((i === 2 || i === 4) ? ' class="dir"' : '') + '>' + h + '</div>';
+    }).join('');
+    t.appendChild(cab);
+    if (!rows.length) vazio(t, 'Nenhuma obra encontrada');
+    var p = s.pr = paginar(rows.length, s.pr, ['faixa-ranking', 'pagina-ranking', 'anterior-ranking', 'proxima-ranking']);
+    rows.slice(p * PAGINA, p * PAGINA + PAGINA).forEach(function (o) {
+      var rk = RISCO[o.risco] || RISCO.OK;
+      var l = el('div', 'lin lin-obra grupo'); l.setAttribute('role', 'row'); l.tabIndex = 0; l.style.gridTemplateColumns = cols;
+      l.title = 'Ver os itens da obra ' + o.pep3;
+      l.innerHTML = '<div role="cell" class="c num">' + o.pos + '</div>' +
+        '<div role="cell" class="c c-mono" style="color:var(--navy)">' + esc(o.pep3) + '</div>' +
+        '<div role="cell" class="c num">' + fBRL(o.valor) + '</div>' +
+        '<div role="cell" class="c"><span class="pill ' + (o.reprovado ? 'div' : 'ok') + '"><b aria-hidden="true">' + (o.reprovado ? '×' : '✓') + '</b>' + (o.reprovado ? 'Reprovada' : 'Aprovada') + '</span></div>' +
+        '<div role="cell" class="c num">' + fN(o.alertas) + '</div>' +
+        '<div role="cell" class="c"><div class="score"><div class="score-barra"><span style="width:' + Math.min(100, o.score) + '%;background:' + rk.cor + '"></span></div><span class="score-num">' + Math.round(o.score) + '</span></div></div>' +
+        '<div role="cell" class="c"><span class="pill ' + rk.cls + '">' + esc(o.risco) + '</span></div>' +
+        '<div role="cell" class="c c-diag">' + esc(o.diag) + '</div>';
+      var abrir = function () {
+        s.secao = 'itens'; s.obra = o.pep3; s.q = ''; s.sf = 'todos'; s.pf = 'todas'; s.pagina = 0; s.aberto = null;
+        $('busca').value = ''; desenharResultados();
+      };
+      l.addEventListener('click', abrir);
+      l.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(); } });
+      t.appendChild(l);
+    });
+    var sb = $('sem-baixa'), semB = a.semBaixa || [];
+    sb.hidden = !semB.length;
+    sb.innerHTML = semB.length ? '<h3>PEPs sem material baixado no projeto (' + fN(semB.length) + ')</h3><ul>' + semB.slice(0, 50).map(function (x) {
+      return '<li><span class="pill sem">' + esc(x.nivel) + '</span><span class="c-mono">' + esc(x.pep) + '</span><span>' + fBRL(x.valor) + '</span><span>' + esc(x.obs) + '</span></li>';
+    }).join('') + '</ul>' + (semB.length > 50 ? '<p class="dica-linha">Lista completa no relatório XLSX (aba RANKING DE RISCO).</p>' : '') : '';
+  }
+
   function detalhe(r, mm, st) {
     var un = r.un ? ' ' + esc(r.un) : '';
     var d = el('div', 'detalhe');
@@ -382,7 +563,16 @@
     return d;
   }
 
-  $('busca').addEventListener('input', function (e) { s.q = e.target.value; s.pagina = 0; desenharResultados(); });
+  // pesquisa com espera curta: nao refiltra a cada tecla em bases grandes
+  function adiar(fn, ms) { var t; return function (e) { clearTimeout(t); t = setTimeout(function () { fn(e); }, ms); }; }
+  $('busca').addEventListener('input', adiar(function (e) { s.q = e.target.value; s.pagina = 0; desenharResultados(); }, 180));
+  $('busca-alertas').addEventListener('input', adiar(function (e) { s.qa = e.target.value; s.pa = 0; desenharResultados(); }, 180));
+  $('busca-ranking').addEventListener('input', adiar(function (e) { s.qr = e.target.value; s.pr = 0; desenharResultados(); }, 180));
+  document.querySelectorAll('.secao').forEach(function (b) { b.addEventListener('click', function () { s.secao = b.dataset.secao; desenharResultados(); }); });
+  $('anterior-alertas').addEventListener('click', function () { s.pa = Math.max(0, s.pa - 1); desenharResultados(); });
+  $('proxima-alertas').addEventListener('click', function () { s.pa += 1; desenharResultados(); });
+  $('anterior-ranking').addEventListener('click', function () { s.pr = Math.max(0, s.pr - 1); desenharResultados(); });
+  $('proxima-ranking').addEventListener('click', function () { s.pr += 1; desenharResultados(); });
   $('anterior').addEventListener('click', function () { s.pagina = Math.max(0, s.pagina - 1); desenharResultados(); });
   $('proxima').addEventListener('click', function () { s.pagina += 1; desenharResultados(); });
   $('fechar-banner').addEventListener('click', function () { s.banner = false; desenharResultados(); });

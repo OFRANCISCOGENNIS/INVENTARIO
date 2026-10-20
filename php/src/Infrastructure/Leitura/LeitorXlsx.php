@@ -136,6 +136,7 @@ final class LeitorXlsx implements LeitorPlanilha
             if ($r->nodeType === XMLReader::ELEMENT && $r->localName === 'row') {
                 $numLinha = (int) ($r->getAttribute('r') ?? ($numLinha + 1));
                 $linha = [];
+                $proxCol = 0;
                 if ($r->isEmptyElement) {
                     $linhas[$numLinha] = [];
                     $linha = null;
@@ -144,8 +145,10 @@ final class LeitorXlsx implements LeitorPlanilha
                 $linhas[$numLinha] = $linha;
                 $linha = null;
             } elseif ($r->nodeType === XMLReader::ELEMENT && $r->localName === 'c' && $linha !== null) {
+                // sem o atributo r (opcional no formato), a celula ocupa a proxima coluna
                 $ref = (string) $r->getAttribute('r');
-                $col = $ref !== '' ? self::coluna($ref) : count($linha);
+                $col = $ref !== '' ? self::coluna($ref) : $proxCol;
+                $proxCol = $col + 1;
                 $tipo = (string) ($r->getAttribute('t') ?? 'n');
                 $valor = null;
                 if (!$r->isEmptyElement) {

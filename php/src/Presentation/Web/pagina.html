@@ -6,7 +6,7 @@
 <meta name="csrf" content="{{CSRF}}">
 <title>Análise de Inventário</title>
 <link rel="preload" href="assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="assets/app.css?v=2">
+<link rel="stylesheet" href="assets/app.css?v=3">
 </head>
 <body>
 <div class="app">
@@ -142,6 +142,7 @@
               <div class="falha-texto" id="r-erro-texto"></div>
             </div>
             <button type="button" class="btn-executar" id="executar">Executar análise</button>
+            <div class="progresso" id="progresso" hidden><div class="progresso-barra" id="progresso-barra"></div></div>
             <div class="aguarde" id="aguarde" aria-live="polite" hidden>Não feche esta página até a conclusão.</div>
           </aside>
         </div>
@@ -172,7 +173,53 @@
 
         <div class="kpis" id="kpis"></div>
 
-        <div class="cartao-tabela">
+        <div class="secoes" role="tablist" aria-label="Seções do resultado" id="secoes">
+          <button type="button" role="tab" class="secao" data-secao="itens">Itens SAP x PRJ <span id="n-itens"></span></button>
+          <button type="button" role="tab" class="secao" data-secao="alertas">Alertas críticos <span id="n-alertas"></span></button>
+          <button type="button" role="tab" class="secao" data-secao="ranking">Ranking de risco <span id="n-ranking"></span></button>
+        </div>
+
+        <div class="cartao-tabela" id="sec-alertas" hidden>
+          <div class="filtros">
+            <label class="busca">
+              <span class="sr">Pesquisar alertas</span>
+              <input type="search" id="busca-alertas" placeholder="Pesquisar PEP, material, descrição ou motivo">
+            </label>
+            <div role="group" aria-label="Filtrar por tipo de alerta" class="chips" id="chips-alertas"></div>
+          </div>
+          <div class="tabela-rolagem"><div role="table" aria-label="Alertas críticos" class="tabela" id="tabela-alertas"></div></div>
+          <div class="paginacao">
+            <span id="faixa-alertas"></span>
+            <div class="paginas">
+              <button type="button" class="btn-pag" id="anterior-alertas">Anterior</button>
+              <span id="pagina-alertas"></span>
+              <button type="button" class="btn-pag" id="proxima-alertas">Próxima</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cartao-tabela" id="sec-ranking" hidden>
+          <div class="filtros">
+            <label class="busca">
+              <span class="sr">Pesquisar obras</span>
+              <input type="search" id="busca-ranking" placeholder="Pesquisar obra (PEP3) ou diagnóstico">
+            </label>
+            <div role="group" aria-label="Filtrar por risco" class="chips" id="chips-ranking"></div>
+            <span class="dica-linha">Clique numa obra para ver os itens dela.</span>
+          </div>
+          <div class="tabela-rolagem"><div role="table" aria-label="Ranking de risco por obra" class="tabela" id="tabela-ranking"></div></div>
+          <div class="paginacao">
+            <span id="faixa-ranking"></span>
+            <div class="paginas">
+              <button type="button" class="btn-pag" id="anterior-ranking">Anterior</button>
+              <span id="pagina-ranking"></span>
+              <button type="button" class="btn-pag" id="proxima-ranking">Próxima</button>
+            </div>
+          </div>
+          <div class="sem-baixa" id="sem-baixa" hidden></div>
+        </div>
+
+        <div class="cartao-tabela" id="sec-itens">
           <div class="filtros">
             <label class="busca">
               <span class="sr">Pesquisar</span>
@@ -231,6 +278,6 @@
     </main>
   </div>
 </div>
-<script src="assets/app.js?v=2"></script>
+<script src="assets/app.js?v=3"></script>
 </body>
 </html>

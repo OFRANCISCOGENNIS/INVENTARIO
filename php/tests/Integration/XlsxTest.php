@@ -90,6 +90,17 @@ final class XlsxTest extends TestCase
         self::assertSame('A4:E304', $ws->getAutoFilter()->getRange());
         self::assertSame('A5', $ws->getFreezePane());
 
+        // uma entrada por aba + tabela de textos compartilhados (sem aba sobrando)
+        $zip = new \ZipArchive();
+        $zip->open($this->arq);
+        $partes = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $partes[] = $zip->getNameIndex($i);
+        }
+        $zip->close();
+        self::assertSame(2, count(preg_grep('#^xl/worksheets/sheet\d+\.xml$#', $partes)));
+        self::assertContains('xl/sharedStrings.xml', $partes);
+
         // o leitor em fluxo le de volta o que o gravador escreveu
         $t = (new LeitorXlsx())->ler($this->arq)['ANALISE'];
         self::assertSame(['COD', 'SITUACAO', 'VALOR', 'TEXTO', 'VAZIO'], array_slice($t->linhas[2], 0, 5));

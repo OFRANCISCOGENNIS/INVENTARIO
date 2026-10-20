@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Inventario\Presentation\Web;
 
 use Inventario\Application\Pipeline\ContextoAnalise;
+use Inventario\Domain\Alerta\Alerta;
 use Inventario\Domain\Analise\SapPrj\Aprovacao;
 use Inventario\Domain\Analise\SapPrj\LinhaAnalise;
 use Inventario\Domain\Base\Coluna;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
+use Inventario\Domain\Ranking\ObraRisco;
+use Inventario\Domain\Ranking\PepSemBaixa;
 use Inventario\Domain\Support\Numero;
 
 /**
@@ -56,6 +59,38 @@ final class VisaoResultados
             'notaBase' => $c->diagnostico?->nota(),
             'downloads' => $downloads,
             'linhas' => $linhas,
+            'alertasLista' => array_map(static fn (Alerta $a): array => [
+                'tipo' => $a->tipo,
+                'pep3' => $a->pep3,
+                'pep4' => $a->pep4,
+                'code' => $a->codigo,
+                'desc' => $a->descricao,
+                'familia' => $a->familia,
+                'valor' => $a->valor,
+                'qtd' => $a->qtd,
+                'pu' => $a->precoUnitario,
+                'ref' => is_float($a->referencia) ? $a->referencia : ($a->referencia === null ? null : (string) $a->referencia),
+                'motivo' => $a->motivo,
+            ], $c->alertas()->alertas()),
+            'ranking' => array_map(static fn (ObraRisco $o): array => [
+                'pos' => $o->posicao,
+                'pep3' => $o->pep3,
+                'valor' => $o->valorObra,
+                'reprovado' => $o->reprovado,
+                'alertas' => $o->alertas,
+                'divPreco' => $o->divergenciasPreco,
+                'sobrepreco' => $o->sobrepreco,
+                'comFora' => $o->comFora,
+                'score' => $o->score,
+                'risco' => $o->risco,
+                'diag' => $o->diagnostico,
+            ], $c->ranking?->obras ?? []),
+            'semBaixa' => array_map(static fn (PepSemBaixa $p): array => [
+                'nivel' => $p->nivel,
+                'pep' => $p->pep,
+                'valor' => $p->valor,
+                'obs' => $p->observacao,
+            ], $c->ranking?->semBaixa ?? []),
             'relatorioHtml' => $relatorioHtml,
         ];
     }

@@ -45,11 +45,15 @@ Abra `http://127.0.0.1:8000`. A página tem três telas:
 
 - **Nova análise**: arraste ou selecione as bases, escolha *Juntar* ou *Separar* (com mais de
   um arquivo), inclua a base de preços MIN/MAX se quiser e clique em **Executar análise**.
-- **Resultados**: indicadores clicáveis (filtram a tabela), pesquisa, filtro por status e por
-  faixa de preço, ordenação por coluna, 25 linhas por página e detalhe SAP x PRJ com o motivo
-  do veredito ao clicar numa linha. Exporta os registros filtrados ou todos em CSV e baixa o
-  relatório completo em XLSX/JSON. Em *Relatório completo* ficam as demais abas (painel,
-  alertas, racionalização, preço unitário, ranking, diagnóstico, devoluções).
+- **Resultados**: indicadores clicáveis e três seções:
+  - *Itens SAP x PRJ* — pesquisa, filtro por status e por faixa de preço, ordenação por
+    coluna, 25 linhas por página e detalhe SAP x PRJ com o motivo do veredito ao clicar numa
+    linha; exporta os registros filtrados ou todos em CSV;
+  - *Alertas críticos* — pesquisa e filtro por tipo de alerta;
+  - *Ranking de risco* — obras por score, filtro por nível de risco e PEPs sem baixa no PRJ;
+    clicar numa obra mostra só os itens dela.
+  Baixa o relatório completo em XLSX/JSON; em *Relatório completo* ficam as demais abas.
+  O envio mostra o progresso do upload e o tempo da análise.
 - **Ajuda**: passo a passo e o significado de cada status.
 
 Status de cada linha: **Não aderente** (SIT MAT não aderente), **Sem correspondência** (só SAP
@@ -58,8 +62,10 @@ ou só PRJ têm quantidade), **Verificar** (item aderente em obra reprovada ou s
 (`public/assets/fonts`).
 
 Em produção, aponte o servidor web para `public/` e mantenha `storage/` fora da raiz pública.
-Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo: uma base de 30 mil linhas leva cerca de
-10 s e cabe nos 512 MB do plano gratuito do Render.
+Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo (o Excel de saída usa textos
+compartilhados e compressão rápida) e a resposta para a tela vai comprimida em gzip: uma base
+de 30 mil linhas fica pronta na tela em cerca de 5 s e cabe nos 512 MB do plano gratuito do
+Render.
 
 ### Publicar o site na internet (Render)
 

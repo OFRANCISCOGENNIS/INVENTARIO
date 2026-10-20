@@ -30,8 +30,12 @@ final class ExportadorXlsx implements Exportador
         return 'xlsx';
     }
 
+    /** @var array<int|string, int> texto => indice na tabela de textos compartilhados */
+    private array $textos = [];
+
     public function exportar(Relatorio $r, string $caminho): string
     {
+        $this->textos = [];
         $estilos = new EstilosXlsx();
         $temps = [];
         $nomes = [];
@@ -60,13 +64,27 @@ final class ExportadorXlsx implements Exportador
             $zip->addFromString('xl/workbook.xml', $this->workbook($nomes, $filtros));
             $zip->addFromString('xl/_rels/workbook.xml.rels', $this->relacoes(count($nomes)));
             $zip->addFromString('xl/styles.xml', $estilos->xml());
+            $sst = tempnam(sys_get_temp_dir(), 'sst');
+            if ($sst === false) {
+                throw new RuntimeException('sem espaco temporario para gravar o XLSX');
+            }
+            $this->gravarTextos($sst);
+            $zip->addFile($sst, 'xl/sharedStrings.xml');
+            $zip->setCompressionName('xl/sharedStrings.xml', ZipArchive::CM_DEFLATE, 1);
             foreach ($temps as $i => $tmp) {
-                $zip->addFile($tmp, 'xl/worksheets/sheet' . ($i + 1) . '.xml');
+                $nomeZip = 'xl/worksheets/sheet' . ($i + 1) . '.xml';
+                $zip->addFile($tmp, $nomeZip);
+                // o nivel padrao de compressao levava ~7 s em 30 mil linhas; o nivel 1
+                // leva uma fracao disso e o arquivo cresce pouco (XML repete muito)
+                $zip->setCompressionName($nomeZip, ZipArchive::CM_DEFLATE, 1);
             }
             $zip->close();
         } finally {
             foreach ($temps as $tmp) {
                 @unlink($tmp);
+            }
+            if (isset($sst) && is_string($sst)) {
+                @unlink($sst);
             }
         }
 
@@ -171,10 +189,17 @@ final class ExportadorXlsx implements Exportador
         }
 
         $moeda = array_flip($b->colunasMoeda);
+        $cols = [];
+        for ($i = 0; $i < $n; $i++) {
+            $cols[$i] = '<c r="' . self::col($i);
+        }
         $cache = [];
+        $corPorStatus = [];
         $buf = '';
         foreach ($b->linhas as $l) {
-            $cor = $b->corDaLinha($l);
+            // a cor depende so do valor da coluna de status: calcula uma vez por valor
+            $sv = $b->colunaStatus === null ? '' : (string) ($l[$b->colunaStatus] ?? '');
+            $cor = array_key_exists($sv, $corPorStatus) ? $corPorStatus[$sv] : ($corPorStatus[$sv] = $b->corDaLinha($l));
             $chave = $cor === null ? '-' : $cor[0] . $cor[1];
             if (!isset($cache[$chave])) {
                 $st = [];
@@ -183,13 +208,35 @@ final class ExportadorXlsx implements Exportador
                         ? $e->estilo(9, true, self::contraste($cor[1]), $cor[1], isset($moeda[$i]), 'center')
                         : $e->estilo(9, false, '2D3440', $cor[0] ?? null, isset($moeda[$i]));
                 }
-                $cache[$chave] = [$st, $cor !== null];
+                // pedacos prontos por coluna: celula vazia, texto e numero
+                $vazia = $txt = $num = [];
+                foreach ($st as $i => $k) {
+                    $sx = $k > 0 ? " s=\"{$k}\"" : '';
+                    $vazia[$i] = $cor !== null && $k > 0 ? "\"{$sx}/>" : null;
+                    $txt[$i] = "\"{$sx} t=\"s\"><v>";
+                    $num[$i] = "\"{$sx}><v>";
+                }
+                $cache[$chave] = [$vazia, $txt, $num];
             }
-            [$st, $preenche] = $cache[$chave];
+            [$vazia, $txt, $num] = $cache[$chave];
+            // pedacos prontos + textos compartilhados: cada celula e uma concatenacao
             $buf .= "<row r=\"{$r}\">";
             $vals = array_values($l);
             for ($i = 0; $i < $n; $i++) {
-                $buf .= self::celula(self::col($i) . $r, $vals[$i] ?? null, $st[$i], $preenche);
+                $v = $vals[$i] ?? null;
+                if ($v === null || $v === '') {
+                    if ($vazia[$i] !== null) {
+                        $buf .= $cols[$i] . $r . $vazia[$i];
+                    }
+                } elseif (is_string($v)) {
+                    $buf .= $cols[$i] . $r . $txt[$i] . ($this->textos[$v] ??= count($this->textos)) . '</v></c>';
+                } elseif ((is_int($v) || is_float($v)) && is_finite((float) $v)) {
+                    $buf .= $cols[$i] . $r . $num[$i] . self::numero($v) . '</v></c>';
+                } elseif (is_bool($v)) {
+                    $buf .= $cols[$i] . $r . substr($num[$i], 0, -4) . ' t="b"><v>' . ($v ? 1 : 0) . '</v></c>';
+                } else {
+                    $buf .= $cols[$i] . $r . $txt[$i] . ($this->textos[(string) $v] ??= count($this->textos)) . '</v></c>';
+                }
             }
             $buf .= '</row>';
             $r++;
@@ -201,6 +248,28 @@ final class ExportadorXlsx implements Exportador
         fwrite($f, $buf);
 
         return $r;
+    }
+
+    /** Tabela de textos compartilhados: cada texto distinto gravado uma vez. */
+    private function gravarTextos(string $arquivo): void
+    {
+        $f = fopen($arquivo, 'wb');
+        if ($f === false) {
+            throw new RuntimeException('nao foi possivel gravar os textos do XLSX');
+        }
+        $n = count($this->textos);
+        fwrite($f, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<sst xmlns="' . self::NS . "\" count=\"{$n}\" uniqueCount=\"{$n}\">");
+        $buf = '';
+        foreach (array_keys($this->textos) as $t) {
+            $buf .= '<si><t xml:space="preserve">' . self::xml((string) $t) . '</t></si>';
+            if (strlen($buf) > 1 << 20) {
+                fwrite($f, $buf);
+                $buf = '';
+            }
+        }
+        fwrite($f, $buf . '</sst>');
+        fclose($f);
     }
 
     /** @param list<mixed> $valores */
@@ -236,6 +305,9 @@ final class ExportadorXlsx implements Exportador
         if (is_int($v)) {
             return (string) $v;
         }
+        if ($v == floor($v) && abs($v) < 1e15) {
+            return (string) (int) $v;
+        }
         $s = rtrim(rtrim(sprintf('%.10F', $v), '0'), '.');
 
         return $s === '-0' ? '0' : $s;
@@ -243,10 +315,16 @@ final class ExportadorXlsx implements Exportador
 
     private static function xml(string $s): string
     {
-        $s = mb_substr($s, 0, 32767);
-        $s = (string) preg_replace('/[^\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]/u', '', $s);
+        if (strlen($s) > 32767) {
+            $s = mb_substr($s, 0, 32767);
+        }
+        // caracteres de controle sao invalidos em XML; checagem barata antes de substituir
+        if (strpbrk($s, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F") !== false) {
+            $s = (string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $s);
+        }
 
-        return htmlspecialchars($s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        // ENT_SUBSTITUTE troca sequencias UTF-8 invalidas em vez de devolver vazio
+        return htmlspecialchars($s, ENT_XML1 | ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     /** 0 -> A, 26 -> AA */
@@ -306,10 +384,12 @@ final class ExportadorXlsx implements Exportador
             $x .= "<Relationship Id=\"rId{$i}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{$i}.xml\"/>";
         }
         $s = $n + 1;
+        $t = $n + 2;
 
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' . $x
             . "<Relationship Id=\"rId{$s}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+            . "<Relationship Id=\"rId{$t}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/>"
             . '</Relationships>';
     }
 
@@ -326,6 +406,7 @@ final class ExportadorXlsx implements Exportador
             . '<Default Extension="xml" ContentType="application/xml"/>'
             . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
             . '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            . '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
             . $x . '</Types>';
     }
 

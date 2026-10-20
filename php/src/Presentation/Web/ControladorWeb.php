@@ -68,6 +68,7 @@ final class ControladorWeb
             return;
         }
         try {
+            $this->limparSaidasAntigas();
             $this->json(200, $this->analisar());
         } catch (Throwable $e) {
             $this->json(500, ['erro' => 'Erro na análise: ' . $e->getMessage()]);
@@ -164,7 +165,29 @@ final class ControladorWeb
     private function json(int $status, array $dados): void
     {
         http_response_code($status === 200 && isset($dados['erro']) ? 422 : $status);
-        echo json_encode($dados, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        $corpo = (string) json_encode($dados, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        // a resposta de uma base grande passa de 15 MB; comprimida cai ~10x
+        if (strlen($corpo) > 2048 && str_contains((string) ($_SERVER['HTTP_ACCEPT_ENCODING'] ?? ''), 'gzip')) {
+            $gz = gzencode($corpo, 3);
+            if ($gz !== false) {
+                header('Content-Encoding: gzip');
+                header('Vary: Accept-Encoding');
+                $corpo = $gz;
+            }
+        }
+        header('Content-Length: ' . strlen($corpo));
+        echo $corpo;
+    }
+
+    /** Apaga arquivos gerados ha mais de um dia (o disco do servidor e pequeno). */
+    private function limparSaidasAntigas(): void
+    {
+        $limite = time() - 86400;
+        foreach (glob($this->app->pastaSaidas . '/*') ?: [] as $f) {
+            if (is_file($f) && (int) @filemtime($f) < $limite) {
+                @unlink($f);
+            }
+        }
     }
 
     /**
