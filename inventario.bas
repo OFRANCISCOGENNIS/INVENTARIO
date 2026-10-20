@@ -1173,15 +1173,16 @@ Private Function ClassificarDesc(descNorm As String, ByRef tm As tMaterial) As B
         tm.Familia = "CAIXA" : tm.EhAncora = True : tm.AncoraDep = "" : tm.CodNT006 = "CX"
         tm.DescrRegra = "Caixa (neutro)"
 
+    ' ---- LACRE: 2 por medidor instalado (ODM) ----
+    ' Antes de MEDIDOR: "LACRE P/ MEDIDOR" e lacre, nao medidor.
+    ElseIf InStr(descNorm, "LACRE") > 0 Then
+        tm.Familia = "LACRE" : tm.AncoraDep = "MEDIDOR" : tm.RazaoMin = 1.8 : tm.RazaoMax = 2.2
+        tm.CodNT006 = "LACRE" : tm.DescrRegra = "2 lacres por medidor instalado"
+
     ' ---- MEDIDOR (ancora p/ lacre e caixa) ----
     ElseIf InStr(descNorm, "MEDIDOR") > 0 Then
         tm.Familia = "MEDIDOR" : tm.EhAncora = True : tm.AncoraDep = "" : tm.CodNT006 = "MED"
         tm.DescrRegra = "Medidor de energia"
-
-    ' ---- LACRE: 2 por medidor instalado (ODM) ----
-    ElseIf InStr(descNorm, "LACRE") > 0 Then
-        tm.Familia = "LACRE" : tm.AncoraDep = "MEDIDOR" : tm.RazaoMin = 1.8 : tm.RazaoMax = 2.2
-        tm.CodNT006 = "LACRE" : tm.DescrRegra = "2 lacres por medidor instalado"
 
     ' ---- ELO / FUSIVEL: depende da chave fusivel (1/fase) ----
     ElseIf TemPalavra(descNorm, "ELO") Or (InStr(descNorm, "FUSIVEL") > 0 And InStr(descNorm, "CHAVE") = 0) Then
@@ -1418,7 +1419,14 @@ Private Function MedidorEmODI(ByVal odTp As String, ByVal descNorm As String, _
                               ByVal famN As String) As Boolean
     If odTp <> "ODI" Then Exit Function
     Dim dN As String : dN = descNorm & " " & famN
-    MedidorEmODI = (InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 _
+    MedidorEmODI = EhMedidorODM(dN)
+End Function
+
+' Medidor na regra LACRE x MEDIDOR (ODM) e no alerta MEDIDOR EM PEP ODI:
+' descricao/familia com MEDIDOR, sem CAIXA ("CAIXA PARA MEDIDOR") e sem LACRE
+' ("LACRE P/ MEDIDOR"). dN = descricao normalizada & " " & familia.
+Private Function EhMedidorODM(ByVal dN As String) As Boolean
+    EhMedidorODM = (InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 _
                     And InStr(dN, "LACRE") = 0)
 End Function
 
@@ -2173,7 +2181,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
         If odTp = "ODM" Then
             Dim dN As String : dN = NormStr(descMat) & " " & famN
             If Not medPep3.Exists(pep4) Then medPep3.Add pep4, pep3
-            If InStr(dN, "MEDIDOR") > 0 And InStr(dN, "CAIXA") = 0 Then
+            If EhMedidorODM(dN) Then
                 If medP4.Exists(pep4) Then medP4(pep4) = medP4(pep4) + qtd Else medP4.Add pep4, qtd
             ElseIf InStr(dN, "LACRE") > 0 Then
                 If lacreP4.Exists(pep4) Then lacreP4(pep4) = lacreP4(pep4) + qtd Else lacreP4.Add pep4, qtd
@@ -3046,6 +3054,8 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     Dim CAP_PU As Double : CAP_PU = CfgD("CAP_PU", 18)                 ' teto PU
     Dim PESO_COM As Double : PESO_COM = CfgD("PESO_COM", 2)            ' por COM fora NT.006
     Dim CAP_COM As Double : CAP_COM = CfgD("CAP_COM", 18)             ' teto COM
+    Dim PESO_DISCREP As Double : PESO_DISCREP = CfgD("PESO_DISCREP", 2) ' por discrepancia de valor (ODI)
+    Dim CAP_DISCREP As Double : CAP_DISCREP = CfgD("CAP_DISCREP", 12)   ' teto discrepancia de valor
 
     Dim ws As Worksheet
     Set ws = wb.Worksheets.Add(After:=wsAlertaC)
@@ -3073,7 +3083,7 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
     Dim p4P3  As Object : Set p4P3  = CreateObject("Scripting.Dictionary")  ' PEP4 -> PEP3
 
     ' Discrepancia de valor de material (ODI): PU de cada linha x media do
-    ' codigo. Vira secao propria no fim da aba e entra no DIAGNOSTICO da obra.
+    ' codigo. Vira secao propria no fim da aba e entra no SCORE e no DIAGNOSTICO.
     Dim dvTol As Double : dvTol = CfgD("DISCREP_VALOR_PCT", 0.3)
     Dim dvItens As Collection : Set dvItens = DiscrepValorODI(AcharBaseInventario(wb), dvTol)
     Dim dvOb As Object : Set dvOb = CreateObject("Scripting.Dictionary")      ' PEP3 -> n discrepancias
@@ -3168,6 +3178,12 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
         Next r
     End If
 
+    ' 5) obra so com discrepancia de valor tambem entra no ranking
+    Dim kDv As Variant
+    For Each kDv In dvOb.Keys
+        If Not valOb.Exists(kDv) Then valOb.Add kDv, 0#
+    Next kDv
+
     ' ---------------- score + ordenacao ----------------
     Dim nOb As Long : nOb = valOb.Count
     Dim ks() As String, sc() As Double
@@ -3188,7 +3204,9 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
             Dim pCo As Double : pCo = 0
             If comOb.Exists(k) Then pCo = comOb(k) * PESO_COM
             If pCo > CAP_COM Then pCo = CAP_COM
-            s = s + pAl + pPu + pCo
+            Dim pDv As Double : pDv = 0
+            If dvOb.Exists(k) Then pDv = ParcelaRisco(dvOb(k), PESO_DISCREP, CAP_DISCREP)
+            s = s + pAl + pPu + pCo + pDv
             If s > 100 Then s = 100
             ks(ix) = CStr(k) : sc(ix) = s : ix = ix + 1
         Next k
@@ -3558,6 +3576,12 @@ End Sub
 '  +/- DISCREP_VALOR_PCT (padrao 30%) = discrepancia. Codigo com um unico
 '  lancamento ODI nao tem com o que comparar e fica de fora.
 ' ===========================================================================
+
+' Parcela de um tipo de apontamento no SCORE do ranking: n x peso, limitada ao teto.
+Private Function ParcelaRisco(ByVal n As Double, ByVal peso As Double, ByVal teto As Double) As Double
+    ParcelaRisco = n * peso
+    If ParcelaRisco > teto Then ParcelaRisco = teto
+End Function
 
 ' Desvio do PU em relacao a media, em fracao (+0,45 = 45% acima).
 Private Function DesvioMedia(ByVal pu As Double, ByVal media As Double) As Double
@@ -4436,6 +4460,8 @@ Private Function CfgPadrao() As Collection
     c.Add Array("CAP_PU", 18, "Ranking: teto da parcela de PU")
     c.Add Array("PESO_COM", 2, "Ranking: peso por COM fora do previsto NT.006")
     c.Add Array("CAP_COM", 18, "Ranking: teto da parcela de COM")
+    c.Add Array("PESO_DISCREP", 2, "Ranking: peso por discrepancia de valor de material (ODI)")
+    c.Add Array("CAP_DISCREP", 12, "Ranking: teto da parcela de discrepancia de valor")
     c.Add Array("COM_CRITICO", "CH FUS; PARA RAIO", "Familias COM criticas (separadas por ;) que reprovam o PEP3")
     c.Add Array("DIF_ABS_COND_NU", 5, "COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE")
     c.Add Array("DIF_ABS_CABO", 15, "Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE")
@@ -6519,6 +6545,20 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 70 (limite) = ok", (EhDiscrepValor(70, 100, 0.3) = False)
     RegTest nomes, oks, det, cnt, "EhDiscrepValor PU 115 = ok", (EhDiscrepValor(115, 100, 0.3) = False)
     RegTest nomes, oks, det, cnt, "EhDiscrepValor media zero = sem comparacao", (EhDiscrepValor(50, 0, 0.3) = False)
+    ' Discrepancia de valor no SCORE do ranking: 2 por item, teto 12
+    RegTest nomes, oks, det, cnt, "ParcelaRisco 2 discrepancias x 2 = 4", (ParcelaRisco(2, 2, 12) = 4)
+    RegTest nomes, oks, det, cnt, "ParcelaRisco 6 discrepancias x 2 = 12 (teto)", (ParcelaRisco(6, 2, 12) = 12)
+    RegTest nomes, oks, det, cnt, "ParcelaRisco 10 discrepancias x 2 = teto 12", (ParcelaRisco(10, 2, 12) = 12)
+    RegTest nomes, oks, det, cnt, "ParcelaRisco sem discrepancia = 0", (ParcelaRisco(0, 2, 12) = 0)
+    ' LACRE P/ MEDIDOR e lacre (antes caia em MEDIDOR na NT.006 e na regra ODM)
+    Dim tmTstLac As tMaterial, tmTstMed As tMaterial, okTstCl As Boolean
+    okTstCl = ClassificarDesc(NormStr("LACRE P/ MEDIDOR"), tmTstLac)
+    RegTest nomes, oks, det, cnt, "ClassificarDesc LACRE P/ MEDIDOR = familia LACRE", (okTstCl And tmTstLac.Familia = "LACRE")
+    okTstCl = ClassificarDesc(NormStr("MEDIDOR ELETRONICO MONOFASICO"), tmTstMed)
+    RegTest nomes, oks, det, cnt, "ClassificarDesc MEDIDOR ELETRONICO = familia MEDIDOR", (okTstCl And tmTstMed.Familia = "MEDIDOR")
+    RegTest nomes, oks, det, cnt, "EhMedidorODM MEDIDOR ELETRONICO = medidor", (EhMedidorODM(NormStr("MEDIDOR ELETRONICO") & " MEDIDOR") = True)
+    RegTest nomes, oks, det, cnt, "EhMedidorODM LACRE P/ MEDIDOR = nao e medidor", (EhMedidorODM(NormStr("LACRE P/ MEDIDOR") & " LACRE") = False)
+    RegTest nomes, oks, det, cnt, "EhMedidorODM CAIXA PARA MEDIDOR = nao e medidor", (EhMedidorODM(NormStr("CAIXA PARA MEDIDOR") & " CAIXA MEDICAO") = False)
 
     Dim ws As Worksheet
     On Error Resume Next

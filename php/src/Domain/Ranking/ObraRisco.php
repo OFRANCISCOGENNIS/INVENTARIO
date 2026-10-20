@@ -18,6 +18,7 @@ final class ObraRisco
         public readonly float $score,
         public readonly string $risco,
         public readonly string $diagnostico,
+        public readonly int $discrepanciasValor = 0,
     ) {
     }
 

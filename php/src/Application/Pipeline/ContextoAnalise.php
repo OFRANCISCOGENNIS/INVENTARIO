@@ -17,6 +17,7 @@ use Inventario\Domain\Historico\RegistroObra;
 use Inventario\Domain\Historico\RepositorioHistorico;
 use Inventario\Domain\Painel\PainelGestor;
 use Inventario\Domain\Preco\FontePrecos;
+use Inventario\Domain\Preco\LinhaDiscrepanciaValor;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
 use Inventario\Domain\Preco\TabelaPrecos;
 use Inventario\Domain\Ranking\ResultadoRanking;
@@ -41,6 +42,8 @@ final class ContextoAnalise
     public array $precoUnitario = [];
     public ?ResultadoAlertas $alertas = null;
     public ?ResultadoDiagnostico $diagnostico = null;
+    /** @var list<LinhaDiscrepanciaValor> */
+    public array $discrepanciaValor = [];
     public ?ResultadoRanking $ranking = null;
     public ?PainelGestor $painel = null;
     /** @var list<RegistroObra> */

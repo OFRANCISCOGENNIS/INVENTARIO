@@ -73,6 +73,11 @@ final class Paleta
         '*' => ['F4F7FA', '2D3440'],
     ];
 
+    public const DISCREP_VALOR = [
+        'ACIMA DA MEDIA' => ['FCE2E4', 'C00000'],
+        'ABAIXO DA MEDIA' => ['FFF4D6', 'B07C00'],
+    ];
+
     public const SEM_BAIXA = [
         'PEP3' => ['FCE2E4', 'C00000'],
         'PEP4' => ['FFF4D6', 'B07C00'],

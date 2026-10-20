@@ -9,6 +9,7 @@ use Inventario\Domain\Alerta\Alerta;
 use Inventario\Domain\Analise\SapPrj\Aprovacao;
 use Inventario\Domain\Analise\SapPrj\LinhaAnalise;
 use Inventario\Domain\Base\Coluna;
+use Inventario\Domain\Preco\LinhaDiscrepanciaValor;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
 use Inventario\Domain\Ranking\ObraRisco;
 use Inventario\Domain\Ranking\PepSemBaixa;
@@ -84,7 +85,21 @@ final class VisaoResultados
                 'score' => $o->score,
                 'risco' => $o->risco,
                 'diag' => $o->diagnostico,
+                'discrep' => $o->discrepanciasValor,
             ], $c->ranking?->obras ?? []),
+            'discrepTol' => $c->parametros->numero('DISCREP_VALOR_PCT'),
+            'discrepancias' => array_map(static fn (LinhaDiscrepanciaValor $d): array => [
+                'pep3' => $d->pep3,
+                'pep4' => $d->pep4,
+                'code' => $d->codigo,
+                'desc' => $d->descricao,
+                'qtd' => $d->qtd,
+                'valor' => $d->valor,
+                'pu' => $d->precoUnitario,
+                'media' => $d->media,
+                'desvio' => $d->desvio,
+                'n' => $d->lancamentos,
+            ], $c->discrepanciaValor),
             'semBaixa' => array_map(static fn (PepSemBaixa $p): array => [
                 'nivel' => $p->nivel,
                 'pep' => $p->pep,

@@ -56,7 +56,8 @@ Na aba **RANKING DE RISCO**, a seção "DISCREPANCIA DE VALOR DE MATERIAL (ODI)"
 preço unitário (VALOR / MAT LIB SAP) de cada linha de PEP **ODI** com a **média do mesmo
 código** em todas as linhas ODI da base. Fora de ±30% (parâmetro `DISCREP_VALOR_PCT` na
 CONFIG) é discrepância, acima ou abaixo da média. Código com um único lançamento em ODI não
-tem com o que ser comparado e fica de fora. A contagem também entra no DIAGNÓSTICO da obra.
+tem com o que ser comparado e fica de fora. A contagem entra no DIAGNÓSTICO da obra e no
+SCORE do ranking: 2 pontos por discrepância, até 12 (`PESO_DISCREP` e `CAP_DISCREP` na CONFIG).
 
 ## Abas persistentes
 

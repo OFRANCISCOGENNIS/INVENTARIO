@@ -10,13 +10,15 @@ use Inventario\Domain\Analise\SapPrj\ResultadoSapPrj;
 use Inventario\Domain\Base\Coluna;
 use Inventario\Domain\Base\TipoOD;
 use Inventario\Domain\Config\Parametros;
+use Inventario\Domain\Preco\LinhaDiscrepanciaValor;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
 use Inventario\Domain\Support\Formatador;
 use Inventario\Domain\Support\Ordenacao;
 
 /**
  * RANKING DE RISCO POR OBRA: consolida reprovacao SAP x PRJ, alertas,
- * divergencias de preco e racionalizacao NT.006 num SCORE 0-100 por obra
+ * divergencias de preco, racionalizacao NT.006 e discrepancias de valor de
+ * material (ODI) num SCORE 0-100 por obra
  * (ProcessarRankingRisco + SecaoSemBaixaPRJ do VBA).
  */
 final class CalculadoraRisco
@@ -28,14 +30,16 @@ final class CalculadoraRisco
     /**
      * @param list<LinhaPrecoUnitario> $precoUnitario
      * @param list<LinhaRacionalizacao> $racionalizacao
+     * @param list<LinhaDiscrepanciaValor> $discrepancias
      */
     public function calcular(
         ResultadoSapPrj $analise,
         ResultadoAlertas $alertas,
         array $precoUnitario,
         array $racionalizacao,
+        array $discrepancias = [],
     ): ResultadoRanking {
-        $val = $rep = $al = $pu = $sob = $com = [];
+        $val = $rep = $al = $pu = $sob = $com = $dv = [];
         $p3Itn = $p3Bx = $p3Lib = $p4Itn = $p4Bx = $p4Lib = $p4Val = $p4P3 = [];
 
         foreach ($analise->linhas as $l) {
@@ -91,6 +95,14 @@ final class CalculadoraRisco
             }
         }
 
+        foreach ($discrepancias as $d) {
+            $p3 = trim($d->pep3);
+            if ($p3 !== '') {
+                $dv[$p3] = ($dv[$p3] ?? 0) + 1;
+                $val[$p3] ??= 0.0;
+            }
+        }
+
         // score + ordenacao (maior score; empate -> maior valor de obra)
         $itens = [];
         foreach ($val as $p3 => $v) {
@@ -99,6 +111,7 @@ final class CalculadoraRisco
             $s += min(($al[$p3] ?? 0) * $this->p->numero('PESO_ALERTA'), $this->p->numero('CAP_ALERTA'));
             $s += min(($pu[$p3] ?? 0) * $this->p->numero('PESO_PU'), $this->p->numero('CAP_PU'));
             $s += min(($com[$p3] ?? 0) * $this->p->numero('PESO_COM'), $this->p->numero('CAP_COM'));
+            $s += min(($dv[$p3] ?? 0) * $this->p->numero('PESO_DISCREP'), $this->p->numero('CAP_DISCREP'));
             $itens[] = ['p3' => $p3, 'score' => min($s, 100.0), 'valor' => $v];
         }
         $itens = Ordenacao::estavel($itens, static fn (array $a, array $b): int => [$b['score'], $b['valor']] <=> [$a['score'], $a['valor']]);
@@ -110,6 +123,7 @@ final class CalculadoraRisco
             $nPu = $pu[$p3] ?? 0;
             $nCo = $com[$p3] ?? 0;
             $vSo = $sob[$p3] ?? 0.0;
+            $nDv = $dv[$p3] ?? 0;
             $ehRep = $rep[$p3] ?? false;
             $diag = [];
             if ($ehRep) {
@@ -124,6 +138,9 @@ final class CalculadoraRisco
             if ($nCo > 0) {
                 $diag[] = "{$nCo} COM fora do previsto";
             }
+            if ($nDv > 0) {
+                $diag[] = "{$nDv} discrepancia(s) de valor de material";
+            }
             if (isset($p3Itn[$p3]) && !isset($p3Bx[$p3])) {
                 $diag[] = 'nenhum material baixado no PRJ';
             }
@@ -131,6 +148,7 @@ final class CalculadoraRisco
                 $i + 1, $p3, $it['valor'], $ehRep, $nAl, $nPu, $vSo, $nCo, $it['score'],
                 ObraRisco::nivel($it['score']),
                 $diag === [] ? 'Sem apontamentos' : implode(' | ', $diag),
+                $nDv,
             );
         }
 

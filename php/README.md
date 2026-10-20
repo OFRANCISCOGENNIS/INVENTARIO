@@ -156,14 +156,12 @@ Padrões usados:
 composer test        # ou: vendor/bin/phpunit
 ```
 
-91 testes: os testes de lógica do `TestarLogicaInventario` do VBA (aderência, sinal por
-OD, equivalentes, aliases, alertas, diagnóstico, NT.006) mais testes de integração do
+99 testes: os testes de lógica do `TestarLogicaInventario` do VBA (aderência, sinal por
+OD, equivalentes, aliases, alertas, discrepância de valor, diagnóstico, NT.006) mais testes de integração do
 pipeline completo sobre `exemplos/base_exemplo.csv`.
 
 ## Diferenças em relação ao VBA
 
-- Material com descrição `LACRE P/ MEDIDOR` era contado como **medidor** na regra
-  LACRE x MEDIDOR e classificado como **MEDIDOR** na racionalização NT.006. Aqui é lacre.
 - Números nos textos não têm a vírgula sobrando do formato `#,##0.##` (`1.234` em vez de `1.234,`).
 - Formatação condicional/KPIs dinâmicos que reagem a filtro, botões e hiperlinks do Excel
   não existem no XLSX gerado; as cores por status e o autofiltro, sim.

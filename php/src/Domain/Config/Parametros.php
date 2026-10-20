@@ -27,6 +27,8 @@ final class Parametros
         'CAP_PU' => [18, 'Ranking: teto da parcela de PU'],
         'PESO_COM' => [2, 'Ranking: peso por COM fora do previsto NT.006'],
         'CAP_COM' => [18, 'Ranking: teto da parcela de COM'],
+        'PESO_DISCREP' => [2, 'Ranking: peso por discrepancia de valor de material (ODI)'],
+        'CAP_DISCREP' => [12, 'Ranking: teto da parcela de discrepancia de valor'],
         'COM_CRITICO' => ['CH FUS; PARA RAIO', 'Familias COM criticas (separadas por ;) que reprovam o PEP3'],
         'DIF_ABS_COND_NU' => [5, 'COND NU: diferenca ABSOLUTA (nao %) ate este valor = ADERENTE'],
         'DIF_ABS_CABO' => [15, 'Familias de DIF_ABS_FAMILIAS: dif ABSOLUTA ate este valor = ADERENTE'],
@@ -37,6 +39,7 @@ final class Parametros
         'ODD_VALOR_MIN' => [-100, 'ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE'],
         'POSTE_ODI_PU_MIN' => [500, 'Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)'],
         'PRECOS_MAX_DIAS' => [90, 'Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO'],
+        'DISCREP_VALOR_PCT' => [0.3, 'Discrepancia de valor de material (ODI): PU fora de +/- esta fracao da media do codigo'],
     ];
 
     /** @var array<string, true>|null */

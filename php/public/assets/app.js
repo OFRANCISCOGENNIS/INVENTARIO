@@ -534,6 +534,19 @@
     sb.innerHTML = semB.length ? '<h3>PEPs sem material baixado no projeto (' + fN(semB.length) + ')</h3><ul>' + semB.slice(0, 50).map(function (x) {
       return '<li><span class="pill sem">' + esc(x.nivel) + '</span><span class="c-mono">' + esc(x.pep) + '</span><span>' + fBRL(x.valor) + '</span><span>' + esc(x.obs) + '</span></li>';
     }).join('') + '</ul>' + (semB.length > 50 ? '<p class="dica-linha">Lista completa no relatório XLSX (aba RANKING DE RISCO).</p>' : '') : '';
+
+    // PU de cada linha ODI x media do mesmo codigo; entra no score da obra
+    var dv = $('discrep-valor'), dis = a.discrepancias || [], tol = Math.round((a.discrepTol || 0.3) * 100);
+    dv.hidden = false;
+    dv.innerHTML = '<h3>Discrepância de valor de material · ODI (' + fN(dis.length) + ')</h3>' +
+      '<p class="dica-linha">Preço unitário fora de ±' + tol + '% da média do mesmo código nas linhas ODI da base.</p>' +
+      (dis.length ? '<ul>' + dis.slice(0, 50).map(function (x) {
+        var acima = x.desvio > 0, pct = (acima ? '+' : '−') + (Math.abs(x.desvio) * 100).toFixed(1).replace('.', ',') + '%';
+        return '<li><span class="pill ' + (acima ? 'div' : 'ver') + '">' + pct + '</span><span class="c-mono">' + esc(x.pep4) + '</span>' +
+          '<span class="c-mono">' + esc(x.code) + '</span><span>' + esc(x.desc) + '</span>' +
+          '<span>PU ' + fBRL(x.pu) + ' × média ' + fBRL(x.media) + ' (' + fN(x.n) + ' lançamentos)</span></li>';
+      }).join('') + '</ul>' + (dis.length > 50 ? '<p class="dica-linha">Lista completa no relatório XLSX (aba RANKING DE RISCO).</p>' : '')
+        : '<p class="dica-linha">Nenhum material de ODI com valor fora de ±' + tol + '% da média do código.</p>');
   }
 
   function detalhe(r, mm, st) {
