@@ -20,6 +20,7 @@ Private mDifCondNu As Double ' COND NU: dif ABSOLUTA tolerada (CONFIG DIF_ABS_CO
 Private mDifAbsCabo As Double ' familias DIF_ABS_FAMILIAS: dif ABSOLUTA tolerada
 Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
 Private mOddValMin As Variant ' CONFIG ODD_VALOR_MIN (Empty = padrao -100)
+Private mNormCache As Object ' NormStr: texto original -> normalizado (perf, ver NormStr)
 
 ' Materiais equivalentes (aba EQUIVALENCIAS): COD normalizado -> GRUPO, e
 ' GRUPO -> lista legivel dos codigos ("105300003 = 105300005").
@@ -214,7 +215,23 @@ End Function
 ' ---------------------------------------------------------------------------
 '  HELPERS
 ' ---------------------------------------------------------------------------
+' Upper-case sem acentos. E chamada centenas de milhares de vezes por execucao
+' (varias por linha da base, em quase todas as etapas) e os textos se repetem
+' muito (PEP, familia, tipo, situacao): o resultado fica guardado e as 21
+' substituicoes rodam uma vez por texto distinto.
 Private Function NormStr(s As String) As String
+    If mNormCache Is Nothing Then
+        Set mNormCache = CreateObject("Scripting.Dictionary")
+    ElseIf mNormCache.Exists(s) Then
+        NormStr = mNormCache(s) : Exit Function
+    End If
+    Dim r As String : r = NormStrCalc(s)
+    If mNormCache.Count >= 300000 Then mNormCache.RemoveAll   ' teto de memoria
+    mNormCache.Add s, r
+    NormStr = r
+End Function
+
+Private Function NormStrCalc(ByVal s As String) As String
     ' Upper-case sem acentos (simplificado para os campos relevantes)
     Dim r As String : r = UCase(Trim(s))
     r = Replace(r, ".", "")
@@ -238,7 +255,7 @@ Private Function NormStr(s As String) As String
     r = Replace(r, Chr(250), "U")   ' u agudo
     r = Replace(r, Chr(218), "U")   ' U agudo
     r = Replace(r, "  ", " ")
-    NormStr = Trim(r)
+    NormStrCalc = Trim(r)
 End Function
 
 Private Function NormCod(v As Variant) As String
@@ -269,6 +286,7 @@ End Function
 Public Sub GerarInventario()
 
     Set mFaixaCache = Nothing   ' limpa cache de precos para recarregar a base atual
+    Set mNormCache = Nothing    ' libera a memoria do cache de NormStr da execucao anterior
     mUltimoOk = False : mAvisoLote = ""
 
     Dim wb      As Workbook
@@ -3211,22 +3229,19 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
             ks(ix) = CStr(k) : sc(ix) = s : ix = ix + 1
         Next k
 
-        ' ordena por score desc; empate -> maior valor de obra primeiro
-        Dim a As Long, b As Long, tS As String, tV As Double
-        For a = 0 To nOb - 2
-            For b = 0 To nOb - a - 2
-                Dim troca As Boolean : troca = False
-                If sc(b) < sc(b + 1) Then
-                    troca = True
-                ElseIf sc(b) = sc(b + 1) Then
-                    If valOb(ks(b)) < valOb(ks(b + 1)) Then troca = True
-                End If
-                If troca Then
-                    tV = sc(b) : sc(b) = sc(b + 1) : sc(b + 1) = tV
-                    tS = ks(b) : ks(b) = ks(b + 1) : ks(b + 1) = tS
-                End If
-            Next b
-        Next a
+        ' ordena por score desc; empate -> maior valor de obra primeiro (estavel:
+        ' mesma ordem do bubble sort de antes, em O(n log n))
+        Dim oIdx() As Long, oVal() As Double, ksO() As String, scO() As Double
+        ReDim oIdx(0 To nOb - 1) : ReDim oVal(0 To nOb - 1)
+        ReDim ksO(0 To nOb - 1) : ReDim scO(0 To nOb - 1)
+        For ix = 0 To nOb - 1
+            oIdx(ix) = ix : oVal(ix) = valOb(ks(ix))
+        Next ix
+        OrdenarIdxDesc oIdx, sc, oVal, 0, nOb - 1
+        For ix = 0 To nOb - 1
+            ksO(ix) = ks(oIdx(ix)) : scO(ix) = sc(oIdx(ix))
+        Next ix
+        ks = ksO : sc = scO
     End If
 
     ' ---------------- saida ----------------
@@ -3667,22 +3682,64 @@ Private Function DiscrepValorODI(ByVal wsBase As Worksheet, ByVal tol As Double)
         End If
     Next i
 
-    ' ordena pela maior diferenca (em modulo), selection sort
-    Dim a As Long, b As Long, m As Long, tV As Variant, tD As Double
-    For a = 1 To k - 1
-        m = a
-        For b = a + 1 To k
-            If Abs(dv(b)) > Abs(dv(m)) Then m = b
-        Next b
-        If m <> a Then
-            tV = itens(a) : itens(a) = itens(m) : itens(m) = tV
-            tD = dv(a) : dv(a) = dv(m) : dv(m) = tD
-        End If
-    Next a
+    ' ordena pela maior diferenca (em modulo); empate fica na ordem da base
+    If k = 0 Then Exit Function
+    Dim oIdx() As Long, aDv() As Double, zero() As Double, a As Long
+    ReDim oIdx(1 To k) : ReDim aDv(1 To k) : ReDim zero(1 To k)
     For a = 1 To k
-        out.Add itens(a)
+        oIdx(a) = a : aDv(a) = Abs(dv(a))
+    Next a
+    OrdenarIdxDesc oIdx, aDv, zero, 1, k
+    For a = 1 To k
+        out.Add itens(oIdx(a))
     Next a
 End Function
+
+' Ordena os indices idx(lo..hi) por k1 decrescente e, no empate, k2
+' decrescente (k1/k2 indexados pelo valor do indice). Merge sort ESTAVEL:
+' empate total mantem a ordem de entrada. O(n log n) no lugar dos laces
+' O(n^2) que travavam com milhares de itens.
+Private Sub OrdenarIdxDesc(idx() As Long, k1() As Double, k2() As Double, _
+                           ByVal lo As Long, ByVal hi As Long)
+    If hi <= lo Then Exit Sub
+    Dim tmp() As Long : ReDim tmp(lo To hi)
+    MergeIdxDesc idx, tmp, k1, k2, lo, hi
+End Sub
+
+Private Sub MergeIdxDesc(idx() As Long, tmp() As Long, k1() As Double, k2() As Double, _
+                         ByVal lo As Long, ByVal hi As Long)
+    If hi <= lo Then Exit Sub
+    Dim md As Long : md = (lo + hi) \ 2
+    MergeIdxDesc idx, tmp, k1, k2, lo, md
+    MergeIdxDesc idx, tmp, k1, k2, md + 1, hi
+    Dim i As Long, j As Long, t As Long, xi As Long, xj As Long, daDireita As Boolean
+    i = lo : j = md + 1 : t = lo
+    Do While i <= md And j <= hi
+        xi = idx(i) : xj = idx(j)
+        ' da direita so quando ESTRITAMENTE maior (estabilidade)
+        daDireita = False
+        If k1(xj) > k1(xi) Then
+            daDireita = True
+        ElseIf k1(xj) = k1(xi) Then
+            If k2(xj) > k2(xi) Then daDireita = True
+        End If
+        If daDireita Then
+            tmp(t) = xj : j = j + 1
+        Else
+            tmp(t) = xi : i = i + 1
+        End If
+        t = t + 1
+    Loop
+    Do While i <= md
+        tmp(t) = idx(i) : i = i + 1 : t = t + 1
+    Loop
+    Do While j <= hi
+        tmp(t) = idx(j) : j = j + 1 : t = t + 1
+    Loop
+    For t = lo To hi
+        idx(t) = tmp(t)
+    Next t
+End Sub
 
 ' Secao "DISCREPANCIA DE VALOR DE MATERIAL (ODI)" do RANKING DE RISCO, a partir
 ' da linha r0: titulo, cabecalho e uma linha por item (acima da media em
@@ -3748,17 +3805,23 @@ Private Sub SecaoDiscrepValor(ws As Worksheet, ByVal r0 As Long, itens As Collec
         .Font.Name = "Segoe UI" : .Font.Size = 9 : .Font.Color = RGB(45, 52, 64)
         .VerticalAlignment = xlCenter
     End With
-    ' cor por linha: poucas dezenas de itens em geral
-    For i = 1 To n
-        If CStr(outD(i, 10)) = "ACIMA DA MEDIA" Then
-            ws.Range(ws.Cells(rI + i - 1, 1), ws.Cells(rI + i - 1, 11)).Interior.Color = RGB(252, 226, 228)
-            ws.Cells(rI + i - 1, 10).Font.Color = RGB(192, 0, 0)
-        Else
-            ws.Range(ws.Cells(rI + i - 1, 1), ws.Cells(rI + i - 1, 11)).Interior.Color = RGB(255, 244, 214)
-            ws.Cells(rI + i - 1, 10).Font.Color = RGB(176, 124, 0)
-        End If
-        ws.Cells(rI + i - 1, 10).Font.Bold = True
-    Next i
+    ' Cor: ambar (abaixo da media) no bloco inteiro e vermelho (acima) por
+    ' formatacao condicional - 5 chamadas em vez de 5 por linha (sao milhares
+    ' de itens em base grande). Formula sem funcao: independe do idioma do Excel.
+    Dim bloco As Range : Set bloco = ws.Range(ws.Cells(rI, 1), ws.Cells(rF, 11))
+    bloco.Interior.Color = RGB(255, 244, 214)
+    With ws.Range(ws.Cells(rI, 10), ws.Cells(rF, 10)).Font
+        .Color = RGB(176, 124, 0) : .Bold = True
+    End With
+    On Error Resume Next
+    With bloco.FormatConditions.Add(xlExpression, , "=$J" & rI & "=""ACIMA DA MEDIA""")
+        .Interior.Color = RGB(252, 226, 228)
+    End With
+    With ws.Range(ws.Cells(rI, 10), ws.Cells(rF, 10)).FormatConditions.Add(xlExpression, , _
+                  "=$J" & rI & "=""ACIMA DA MEDIA""")
+        .Font.Color = RGB(192, 0, 0)
+    End With
+    On Error GoTo 0
 End Sub
 
 ' Ultima linha do bloco CONTIGUO de dados na coluna, a partir de linhaIni.
@@ -5662,18 +5725,23 @@ Private Sub ProcessarResumoPEP3(wb As Workbook, wsDet As Worksheet)
         ws.Range(ws.Cells(4, 4), ws.Cells(3 + n, 5)).NumberFormat = "#,##0.00"
         ws.Range(ws.Cells(4, 2), ws.Cells(3 + n, 3)).HorizontalAlignment = xlCenter
 
+        ' Os REPROVADO vem primeiro (score com +1e12): dois blocos contiguos,
+        ' formatados de uma vez em vez de linha a linha
+        Dim nRepR As Long : nRepR = 0
         For ix = 1 To n
-            If CStr(outA(ix, 2)) = "REPROVADO" Then
-                ws.Range(ws.Cells(3 + ix, 1), ws.Cells(3 + ix, 7)).Interior.Color = RGB(252, 226, 228)
-                With ws.Cells(3 + ix, 2)
-                    .Interior.Color = RGB(192, 0, 0) : .Font.Color = RGB(255, 255, 255) : .Font.Bold = True
-                End With
-            Else
-                With ws.Cells(3 + ix, 2)
-                    .Interior.Color = RGB(198, 239, 206) : .Font.Color = RGB(0, 97, 0)
-                End With
-            End If
+            If CStr(outA(ix, 2)) = "REPROVADO" Then nRepR = nRepR + 1
         Next ix
+        If nRepR > 0 Then
+            ws.Range(ws.Cells(4, 1), ws.Cells(3 + nRepR, 7)).Interior.Color = RGB(252, 226, 228)
+            With ws.Range(ws.Cells(4, 2), ws.Cells(3 + nRepR, 2))
+                .Interior.Color = RGB(192, 0, 0) : .Font.Color = RGB(255, 255, 255) : .Font.Bold = True
+            End With
+        End If
+        If nRepR < n Then
+            With ws.Range(ws.Cells(4 + nRepR, 2), ws.Cells(3 + n, 2))
+                .Interior.Color = RGB(198, 239, 206) : .Font.Color = RGB(0, 97, 0)
+            End With
+        End If
 
         ' Tabela estruturada (ListObject) - filtros persistentes e referencia estavel
         On Error Resume Next
@@ -6550,6 +6618,17 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "ParcelaRisco 6 discrepancias x 2 = 12 (teto)", (ParcelaRisco(6, 2, 12) = 12)
     RegTest nomes, oks, det, cnt, "ParcelaRisco 10 discrepancias x 2 = teto 12", (ParcelaRisco(10, 2, 12) = 12)
     RegTest nomes, oks, det, cnt, "ParcelaRisco sem discrepancia = 0", (ParcelaRisco(0, 2, 12) = 0)
+    ' Ordenacao estavel do ranking/discrepancias: k1 desc, empate k2 desc, empate total = ordem de entrada
+    Dim oiT(0 To 4) As Long, oiK1(0 To 4) As Double, oiK2(0 To 4) As Double, oiI As Long
+    oiK1(0) = 5 : oiK1(1) = 9 : oiK1(2) = 5 : oiK1(3) = 9 : oiK1(4) = 5
+    oiK2(0) = 1 : oiK2(1) = 2 : oiK2(2) = 3 : oiK2(3) = 2 : oiK2(4) = 3
+    For oiI = 0 To 4 : oiT(oiI) = oiI : Next oiI
+    OrdenarIdxDesc oiT, oiK1, oiK2, 0, 4
+    RegTest nomes, oks, det, cnt, "OrdenarIdxDesc score desc, valor desc, empate estavel = 1,3,2,4,0", _
+            (oiT(0) = 1 And oiT(1) = 3 And oiT(2) = 2 And oiT(3) = 4 And oiT(4) = 0)
+    ' NormStr com cache devolve o mesmo resultado na 1a e na 2a chamada
+    RegTest nomes, oks, det, cnt, "NormStr cache: 1a chamada", (NormStr(" Pe" & ChrW(231) & "a/Cabo-01 ") = "PECACABO01")
+    RegTest nomes, oks, det, cnt, "NormStr cache: 2a chamada igual", (NormStr(" Pe" & ChrW(231) & "a/Cabo-01 ") = "PECACABO01")
     ' LACRE P/ MEDIDOR e lacre (antes caia em MEDIDOR na NT.006 e na regra ODM)
     Dim tmTstLac As tMaterial, tmTstMed As tMaterial, okTstCl As Boolean
     okTstCl = ClassificarDesc(NormStr("LACRE P/ MEDIDOR"), tmTstLac)
