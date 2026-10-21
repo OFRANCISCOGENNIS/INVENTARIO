@@ -41,9 +41,45 @@ Windows-1252). A aba da base é achada pelos títulos antigos (`MAT LIB SAP`…)
 php -S 127.0.0.1:8000 -t public
 ```
 
-Abra `http://127.0.0.1:8000`, envie as bases (e, se quiser, a base de preços) e veja o
-relatório em guias, com botões para baixar o XLSX e o JSON. Em produção, aponte o
-servidor web para `public/` e mantenha `storage/` fora da raiz pública.
+Abra `http://127.0.0.1:8000`. A página tem três telas:
+
+- **Nova análise**: arraste ou selecione as bases, escolha *Juntar* ou *Separar* (com mais de
+  um arquivo), inclua a base de preços MIN/MAX se quiser e clique em **Executar análise**.
+- **Resultados**: indicadores clicáveis e três seções:
+  - *Itens SAP x PRJ* — pesquisa, filtro por status e por faixa de preço, ordenação por
+    coluna, 25 linhas por página e detalhe SAP x PRJ com o motivo do veredito ao clicar numa
+    linha; exporta os registros filtrados ou todos em CSV;
+  - *Alertas críticos* — pesquisa e filtro por tipo de alerta;
+  - *Ranking de risco* — obras por score, filtro por nível de risco e PEPs sem baixa no PRJ;
+    clicar numa obra mostra só os itens dela.
+  Baixa o relatório completo em XLSX/JSON; em *Relatório completo* ficam as demais abas.
+  O envio mostra o progresso do upload e o tempo da análise.
+- **Ajuda**: passo a passo e o significado de cada status.
+
+Status de cada linha: **Não aderente** (SIT MAT não aderente), **Sem correspondência** (só SAP
+ou só PRJ têm quantidade), **Verificar** (item aderente em obra reprovada ou sem UC) e
+**Aderente**. A tela usa as fontes Inter e JetBrains Mono, servidas pelo próprio site
+(`public/assets/fonts`).
+
+Em produção, aponte o servidor web para `public/` e mantenha `storage/` fora da raiz pública.
+Bases `xlsx`/`xlsm` são lidas e gravadas em fluxo (o Excel de saída usa textos
+compartilhados e compressão rápida) e a resposta para a tela vai comprimida em gzip: uma base
+de 30 mil linhas fica pronta na tela em cerca de 5 s e cabe nos 512 MB do plano gratuito do
+Render.
+
+### Publicar o site na internet (Render)
+
+O repositório já tem `render.yaml` (na raiz) e `php/Dockerfile`:
+
+1. Crie uma conta em https://render.com entrando com o GitHub.
+2. **New → Blueprint**, escolha o repositório `INVENTARIO` e confirme.
+3. Quando pedir `INVENTARIO_SENHA`, digite uma senha. O site passa a pedir usuário
+   `inventario` e essa senha (mude o usuário com a variável `INVENTARIO_USUARIO`).
+4. Ao terminar o deploy, o Render mostra o endereço (`https://analise-inventario-xxxx.onrender.com`).
+
+No plano gratuito o site "dorme" sem uso (o primeiro acesso demora ~1 min) e o disco é
+apagado a cada novo deploy: `config.json`, equivalências e histórico voltam ao padrão.
+Para guardá-los, adicione um disco persistente (plano pago) montado em `/var/www/app/storage`.
 
 ### Pasta de dados
 
@@ -120,14 +156,12 @@ Padrões usados:
 composer test        # ou: vendor/bin/phpunit
 ```
 
-91 testes: os testes de lógica do `TestarLogicaInventario` do VBA (aderência, sinal por
-OD, equivalentes, aliases, alertas, diagnóstico, NT.006) mais testes de integração do
+99 testes: os testes de lógica do `TestarLogicaInventario` do VBA (aderência, sinal por
+OD, equivalentes, aliases, alertas, discrepância de valor, diagnóstico, NT.006) mais testes de integração do
 pipeline completo sobre `exemplos/base_exemplo.csv`.
 
 ## Diferenças em relação ao VBA
 
-- Material com descrição `LACRE P/ MEDIDOR` era contado como **medidor** na regra
-  LACRE x MEDIDOR e classificado como **MEDIDOR** na racionalização NT.006. Aqui é lacre.
 - Números nos textos não têm a vírgula sobrando do formato `#,##0.##` (`1.234` em vez de `1.234,`).
 - Formatação condicional/KPIs dinâmicos que reagem a filtro, botões e hiperlinks do Excel
   não existem no XLSX gerado; as cores por status e o autofiltro, sim.

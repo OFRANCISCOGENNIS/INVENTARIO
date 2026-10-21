@@ -31,7 +31,7 @@ final class Paleta
         'UC - COD MATERIAL VAZIO' => ['EEEEEE', '6E6E6E'],
         'PU BAIXO EM ODI' => ['FCE7F3', 'BE185D'],
         'PU 0,01 EM CABO/COND' => ['FFEDD5', 'C2410C'],
-        'ODD VALOR ABAIXO DO LIMITE' => ['FCE2E4', '991B1B'],
+        'ODD VALOR EXCESSIVO' => ['FCE2E4', 'B91C1C'],
         'POSTE ODI PU BAIXO' => ['E0E7FF', '3730A3'],
         'MEDIDOR EM PEP ODI' => ['EDE9FE', '6D28D9'],
         'QUALIDADE DA BASE - CRITICO' => ['FCE2E4', 'C00000'],
@@ -71,6 +71,11 @@ final class Paleta
         'OK' => ['E7F4EA', '218246'],
         'FALHA' => ['FCE2E4', 'C00000'],
         '*' => ['F4F7FA', '2D3440'],
+    ];
+
+    public const DISCREP_VALOR = [
+        'ACIMA DA MEDIA' => ['FCE2E4', 'C00000'],
+        'ABAIXO DA MEDIA' => ['FFF4D6', 'B07C00'],
     ];
 
     public const SEM_BAIXA = [

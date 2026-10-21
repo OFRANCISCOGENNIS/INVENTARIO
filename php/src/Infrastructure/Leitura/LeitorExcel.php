@@ -11,14 +11,14 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use Throwable;
 
 /**
- * XLSX / XLSM / XLS / ODS via PhpSpreadsheet, so leitura de valores
+ * XLS / ODS via PhpSpreadsheet, so leitura de valores
  * (celulas com formula entram pelo valor calculado salvo no arquivo).
  */
 final class LeitorExcel implements LeitorPlanilha
 {
     public function suporta(string $extensao): bool
     {
-        return in_array($extensao, ['xlsx', 'xlsm', 'xls', 'ods'], true);
+        return in_array($extensao, ['xls', 'ods'], true);
     }
 
     public function ler(string $caminho): array

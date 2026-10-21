@@ -1,0 +1,11 @@
+# Blueprint do Render: cria o site a partir da pasta php/ (Dockerfile)
+services:
+  - type: web
+    name: analise-inventario
+    runtime: docker
+    rootDir: php
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: INVENTARIO_SENHA
+        sync: false

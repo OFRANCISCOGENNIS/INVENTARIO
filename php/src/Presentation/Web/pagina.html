@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf" content="{{CSRF}}">
+<title>Análise de Inventário</title>
+<link rel="preload" href="assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/app.css?v=6">
+</head>
+<body>
+<div class="app">
+  <header class="topo">
+    <div class="logo" aria-hidden="true">AI</div>
+    <div class="marca">
+      <div class="marca-nome">Análise de Inventário</div>
+      <div class="marca-sub">Comparação de bases SAP x PRJ</div>
+    </div>
+    <span class="selo-mvp">MVP</span>
+    <div class="espaco"></div>
+    <button type="button" class="btn-topo" id="topo-nova" hidden>+ Nova análise</button>
+  </header>
+
+  <div class="corpo">
+    <aside class="lateral">
+      <nav aria-label="Navegação principal" class="nav">
+        <button type="button" class="nav-item" data-view="nova"><span class="nav-marca"></span>Nova análise</button>
+        <button type="button" class="nav-item" data-view="resultados" disabled><span class="nav-marca"></span>Resultados</button>
+        <button type="button" class="nav-item" data-view="ajuda"><span class="nav-marca"></span>Ajuda</button>
+      </nav>
+    </aside>
+
+    <main class="principal">
+      <div class="conteudo">
+
+      <!-- NOVA ANALISE -->
+      <section class="view" id="view-nova">
+        <div class="titulo-pagina">
+          <h1>Nova análise</h1>
+          <p>Importe as bases, escolha o modo de análise e execute a comparação.</p>
+        </div>
+
+        <div class="nova-grade">
+          <div class="nova-etapas">
+
+            <section aria-labelledby="s1" class="cartao">
+              <div class="etapa-cab">
+                <span class="etapa-num">1</span>
+                <div>
+                  <h2 id="s1">Importar bases para análise</h2>
+                  <p>Selecione os arquivos que serão utilizados na comparação SAP x PRJ.</p>
+                </div>
+              </div>
+
+              <input type="file" id="arquivos" multiple accept=".xlsx,.xlsm,.xls,.ods,.csv" hidden>
+              <div class="dropzone" id="dropzone" aria-describedby="files-err">
+                <svg width="34" height="40" viewBox="0 0 34 40" fill="none" aria-hidden="true"><path d="M3 3h19l9 9v25H3z" stroke="#17365D" stroke-width="2" stroke-linejoin="round"/><path d="M22 3v9h9" stroke="#17365D" stroke-width="2" stroke-linejoin="round"/><path d="M10 22h14M10 28h10" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/></svg>
+                <div class="dz-titulo">Arraste os arquivos para esta área</div>
+                <div class="dz-sub">ou selecione os arquivos no seu computador</div>
+                <button type="button" class="btn-contorno" id="escolher">Selecionar arquivos</button>
+                <div class="formatos">
+                  <span class="tag-mono">XLSX</span><span class="tag-mono">XLSM</span><span class="tag-mono">XLS</span><span class="tag-mono">ODS</span><span class="tag-mono">CSV</span>
+                </div>
+              </div>
+
+              <div id="files-err" role="alert">
+                <div class="erro-campo" id="erro-campo" hidden></div>
+                <div class="erro-caixa" id="erros-upload" hidden>
+                  <div class="erro-lista" id="erros-upload-lista"></div>
+                  <button type="button" class="fechar" id="fechar-erros" aria-label="Fechar aviso">×</button>
+                </div>
+              </div>
+
+              <div class="arquivos" id="arquivos-bloco" hidden>
+                <div class="arquivos-cab">
+                  <div class="arquivos-rotulo" id="arquivos-rotulo"></div>
+                  <button type="button" class="link" id="limpar">Limpar seleção</button>
+                </div>
+                <ul class="lista-arquivos" id="lista-arquivos"></ul>
+              </div>
+            </section>
+
+            <section aria-labelledby="s2" class="cartao">
+              <div class="etapa-cab">
+                <span class="etapa-num">2</span>
+                <div>
+                  <h2 id="s2">Modo de análise</h2>
+                  <p id="modo-dica">Disponível quando houver mais de um arquivo selecionado.</p>
+                </div>
+              </div>
+              <div role="radiogroup" aria-labelledby="s2" class="modos" id="modos">
+                <button type="button" role="radio" class="modo" data-modo="juntar">
+                  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><rect x="4" y="5" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><rect x="4" y="15" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><rect x="4" y="25" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><path d="M15 8.5h4v19h-4M19 18h4" stroke="#2563EB" stroke-width="1.6"/><rect x="23" y="12" width="10" height="12" rx="1.5" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.6"/></svg>
+                  <div class="modo-texto">
+                    <div class="modo-nome">Juntar bases</div>
+                    <div class="modo-desc">Consolida os arquivos selecionados para executar uma única análise.</div>
+                  </div>
+                  <span class="radio"><span></span></span>
+                </button>
+                <button type="button" role="radio" class="modo" data-modo="separar">
+                  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><rect x="4" y="5" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><rect x="4" y="15" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><rect x="4" y="25" width="10" height="7" rx="1.5" stroke="#17365D" stroke-width="1.6"/><path d="M15 8.5h7M15 18.5h7M15 28.5h7" stroke="#2563EB" stroke-width="1.6"/><rect x="23" y="5" width="9" height="7" rx="1.5" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.6"/><rect x="23" y="15" width="9" height="7" rx="1.5" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.6"/><rect x="23" y="25" width="9" height="7" rx="1.5" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.6"/></svg>
+                  <div class="modo-texto">
+                    <div class="modo-nome">Separar bases</div>
+                    <div class="modo-desc">Executa uma análise independente para cada base selecionada.</div>
+                  </div>
+                  <span class="radio"><span></span></span>
+                </button>
+              </div>
+            </section>
+
+            <section aria-labelledby="s3" class="cartao">
+              <div class="etapa-cab">
+                <span class="etapa-num opcional">3</span>
+                <div class="flex1">
+                  <div class="titulo-linha">
+                    <h2 id="s3">Base de preços MIN/MAX</h2>
+                    <span class="tag-opcional">Opcional</span>
+                  </div>
+                  <p>Adicione uma base de referência de preços para complementar a análise, quando aplicável.</p>
+                </div>
+              </div>
+              <input type="file" id="precos" accept=".xlsx,.xlsm,.xls,.ods,.csv" hidden>
+              <div class="mm-vazio" id="mm-vazio">
+                <div class="mm-texto">Nenhuma base de preços selecionada. A análise pode ser executada sem ela.</div>
+                <button type="button" class="btn-secundario" id="escolher-precos">Selecionar arquivo</button>
+              </div>
+              <div class="mm-arquivo" id="mm-arquivo" hidden></div>
+              <div class="erro-campo" id="erro-precos" role="alert" hidden></div>
+            </section>
+          </div>
+
+          <aside aria-label="Resumo da configuração" class="resumo">
+            <h2>Resumo da configuração</h2>
+            <dl>
+              <div><dt>Arquivos</dt><dd id="r-arquivos">Nenhum</dd></div>
+              <div><dt>Modo</dt><dd id="r-modo">—</dd></div>
+              <div><dt>Base MIN/MAX</dt><dd id="r-precos">Não incluída</dd></div>
+            </dl>
+            <div class="dica" id="r-dica">Comece adicionando as bases na etapa 1. O modo de análise é aplicado quando houver mais de um arquivo.</div>
+            <div class="falha" id="r-erro" role="alert" hidden>
+              <div class="falha-titulo">A análise não foi concluída</div>
+              <div class="falha-texto" id="r-erro-texto"></div>
+            </div>
+            <button type="button" class="btn-executar" id="executar">Executar análise</button>
+            <div class="progresso" id="progresso" hidden><div class="progresso-barra" id="progresso-barra"></div></div>
+            <div class="aguarde" id="aguarde" aria-live="polite" hidden>Não feche esta página até a conclusão.</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- RESULTADOS -->
+      <section class="view" id="view-resultados" hidden>
+        <div class="res-cab">
+          <div class="titulo-pagina">
+            <h1>Resultados</h1>
+            <p id="res-meta"></p>
+          </div>
+          <div class="res-acoes">
+            <button type="button" class="btn-primario" id="exp-filtrados">Exportar filtrados · CSV</button>
+            <button type="button" class="btn-secundario" id="exp-todos">Exportar todos</button>
+            <span id="res-downloads"></span>
+          </div>
+        </div>
+
+        <div class="banner" role="status" id="banner" hidden>
+          <span class="banner-ok">✓</span>
+          <div class="banner-texto"><strong>Análise concluída.</strong> <span id="banner-texto"></span></div>
+          <button type="button" class="fechar verde" id="fechar-banner" aria-label="Fechar">×</button>
+        </div>
+        <div class="aviso" role="status" id="aviso" hidden></div>
+
+        <div role="tablist" aria-label="Bases analisadas" class="abas-base" id="abas-base" hidden></div>
+
+        <div class="kpis" id="kpis"></div>
+
+        <div class="secoes" role="tablist" aria-label="Seções do resultado" id="secoes">
+          <button type="button" role="tab" class="secao" data-secao="itens">Itens SAP x PRJ <span id="n-itens"></span></button>
+          <button type="button" role="tab" class="secao" data-secao="alertas">Alertas críticos <span id="n-alertas"></span></button>
+          <button type="button" role="tab" class="secao" data-secao="ranking">Ranking de risco <span id="n-ranking"></span></button>
+        </div>
+
+        <div class="cartao-tabela" id="sec-alertas" hidden>
+          <div class="filtros">
+            <label class="busca">
+              <span class="sr">Pesquisar alertas</span>
+              <input type="search" id="busca-alertas" placeholder="Pesquisar PEP, material, descrição ou motivo">
+            </label>
+            <div role="group" aria-label="Filtrar por tipo de alerta" class="chips" id="chips-alertas"></div>
+          </div>
+          <div class="tabela-rolagem"><div role="table" aria-label="Alertas críticos" class="tabela" id="tabela-alertas"></div></div>
+          <div class="paginacao">
+            <span id="faixa-alertas"></span>
+            <div class="paginas">
+              <button type="button" class="btn-pag" id="anterior-alertas">Anterior</button>
+              <span id="pagina-alertas"></span>
+              <button type="button" class="btn-pag" id="proxima-alertas">Próxima</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cartao-tabela" id="sec-ranking" hidden>
+          <div class="filtros">
+            <label class="busca">
+              <span class="sr">Pesquisar obras</span>
+              <input type="search" id="busca-ranking" placeholder="Pesquisar obra (PEP3) ou diagnóstico">
+            </label>
+            <div role="group" aria-label="Filtrar por risco" class="chips" id="chips-ranking"></div>
+            <span class="dica-linha">Clique numa obra para ver os itens dela.</span>
+          </div>
+          <div class="tabela-rolagem"><div role="table" aria-label="Ranking de risco por obra" class="tabela" id="tabela-ranking"></div></div>
+          <div class="paginacao">
+            <span id="faixa-ranking"></span>
+            <div class="paginas">
+              <button type="button" class="btn-pag" id="anterior-ranking">Anterior</button>
+              <span id="pagina-ranking"></span>
+              <button type="button" class="btn-pag" id="proxima-ranking">Próxima</button>
+            </div>
+          </div>
+          <div class="sem-baixa" id="sem-baixa" hidden></div>
+          <div class="sem-baixa" id="discrep-valor" hidden></div>
+        </div>
+
+        <div class="cartao-tabela" id="sec-itens">
+          <div class="filtros">
+            <label class="busca">
+              <span class="sr">Pesquisar</span>
+              <input type="search" id="busca" placeholder="Pesquisar material, descrição, PEP ou base">
+            </label>
+            <div role="group" aria-label="Filtrar por status" class="chips" id="chips"></div>
+            <div role="group" aria-label="Filtrar por faixa de preço" class="chips divisor" id="chips-preco" hidden></div>
+          </div>
+
+          <div class="tabela-rolagem">
+            <div role="table" aria-label="Resultados da análise" class="tabela" id="tabela"></div>
+          </div>
+
+          <div class="paginacao">
+            <span id="faixa"></span>
+            <div class="paginas">
+              <button type="button" class="btn-pag" id="anterior">Anterior</button>
+              <span id="pagina"></span>
+              <button type="button" class="btn-pag" id="proxima">Próxima</button>
+            </div>
+          </div>
+        </div>
+
+        <details class="cartao completo" id="completo">
+          <summary>Relatório completo <span>Painel do gestor, alertas críticos, racionalização COM, preço unitário, ranking de risco, diagnóstico e devoluções</span></summary>
+          <div class="relatorio" id="relatorio"></div>
+        </details>
+      </section>
+
+      <!-- AJUDA -->
+      <section class="view" id="view-ajuda" hidden>
+        <div class="titulo-pagina">
+          <h1>Ajuda</h1>
+          <p>Como executar uma análise de inventário SAP x PRJ.</p>
+        </div>
+        <div class="cartao ajuda">
+          <ol>
+            <li><span class="etapa-num">1</span><div><div class="ajuda-t">Importe as bases</div><div class="ajuda-d">Arquivos XLSX, XLSM, XLS, ODS ou CSV com as colunas da extração SAP x PRJ (títulos antigos, como MAT LIB SAP, ou novos, como ATENDIDO SAP). É possível selecionar vários de uma vez.</div></div></li>
+            <li><span class="etapa-num">2</span><div><div class="ajuda-t">Escolha o modo</div><div class="ajuda-d">Com mais de um arquivo: <strong>Juntar</strong> gera uma análise com todas as bases; <strong>Separar</strong> gera uma análise por base. No modo Separar o histórico e o “vs. execução anterior” não são atualizados.</div></div></li>
+            <li><span class="etapa-num opcional">3</span><div><div class="ajuda-t">Base MIN/MAX (opcional)</div><div class="ajuda-d">Planilha com MATERIAL, MIN PU e MAX PU. Ela alimenta o preço unitário, os alertas de preço e o filtro “Fora da faixa”.</div></div></li>
+            <li><span class="etapa-num">4</span><div><div class="ajuda-t">Consulte e exporte</div><div class="ajuda-d">Pesquise, filtre por status, clique numa linha para ver SAP, PRJ e o motivo do veredito, e exporte os registros filtrados ou todos em CSV. O relatório completo em XLSX traz todas as abas da análise.</div></div></li>
+          </ol>
+        </div>
+        <div class="cartao ajuda">
+          <h2 class="ajuda-h">O que significa cada status</h2>
+          <dl class="legenda">
+            <div><dt><span class="pill div"><b>×</b>Não aderente</span></dt><dd>SAP e PRJ não batem pela regra da família (tolerância, diferença absoluta, equivalentes) ou o item viola uma regra de OD.</dd></div>
+            <div><dt><span class="pill sem"><b>–</b>Sem correspondência</span></dt><dd>Só um dos lados tem quantidade: material liberado sem projeto, ou projetado sem liberação.</dd></div>
+            <div><dt><span class="pill ver"><b>!</b>Verificar</span></dt><dd>O item é aderente, mas a obra (PEP3) foi reprovada por outro item ou não tem UC para avaliar.</dd></div>
+            <div><dt><span class="pill ok"><b>✓</b>Aderente</span></dt><dd>Quantidades aderentes e obra aprovada.</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      </div>
+    </main>
+  </div>
+</div>
+<script src="assets/app.js?v=6"></script>
+</body>
+</html>

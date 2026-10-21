@@ -9,6 +9,7 @@ use Inventario\Domain\Base\Coluna;
 use Inventario\Domain\Base\LinhaBase;
 use Inventario\Domain\Config\Parametros;
 use Inventario\Domain\Equivalencia\CatalogoEquivalencias;
+use Inventario\Domain\Preco\DiscrepanciaValor;
 use Inventario\Domain\Regra\AvaliacaoLinha;
 use Inventario\Domain\Regra\AvaliadorLinha;
 use Inventario\Domain\Regra\RegraAderencia;
@@ -27,6 +28,8 @@ use Inventario\Domain\Support\Texto;
 final class AnalisadorSapPrj
 {
     private readonly AvaliadorLinha $avaliador;
+    /** @var array<string, float> codigo => PU medio na ODI (valor excessivo em ODD) */
+    private array $mediasOdi = [];
 
     public function __construct(
         private readonly Parametros $p,
@@ -38,6 +41,7 @@ final class AnalisadorSapPrj
     public function analisar(BaseInventario $base): ResultadoSapPrj
     {
         $linhas = $base->linhas();
+        $this->mediasOdi = DiscrepanciaValor::mediasOdi($base);
 
         // ---- pre-passe: UC zerado por obra (so devolve com TODOS os UC zerados)
         $p3nUC = [];
@@ -187,6 +191,7 @@ final class AnalisadorSapPrj
             $l->bruto(Coluna::VALOR) ?? 0,
             $lib,
             $prj,
+            $this->mediasOdi[$l->codigo()] ?? null,
         );
         if ($grupo !== null) {
             $av->ajustarEquivalencia(CatalogoEquivalencias::situacaoPorQuantidade($libAv, $prjAv) === 'ADERENTE');

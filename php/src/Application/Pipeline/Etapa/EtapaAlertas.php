@@ -7,6 +7,7 @@ namespace Inventario\Application\Pipeline\Etapa;
 use Inventario\Application\Pipeline\ContextoAnalise;
 use Inventario\Application\Pipeline\Etapa;
 use Inventario\Domain\Alerta\GeradorAlertas;
+use Inventario\Domain\Preco\DiscrepanciaValor;
 use Inventario\Domain\Preco\PrecosReferencia;
 use Inventario\Domain\Preco\TabelaPrecos;
 
@@ -25,6 +26,7 @@ final class EtapaAlertas implements Etapa
             : PrecosReferencia::dePontoMedio($ctx->tabelaPrecos ?? TabelaPrecos::semFonte('NENHUMA'));
         $ctx->saude->definirFonteReferencia($ref->fonte);
 
-        $ctx->alertas = GeradorAlertas::padrao($ctx->parametros, $ref, $ctx->precoUnitario)->gerar($ctx->base);
+        $ctx->alertas = GeradorAlertas::padrao($ctx->parametros, $ref, $ctx->precoUnitario,
+            DiscrepanciaValor::mediasOdi($ctx->base))->gerar($ctx->base);
     }
 }
