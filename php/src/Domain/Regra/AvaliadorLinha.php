@@ -56,7 +56,6 @@ final class AvaliadorLinha
         $pS = $prjSinal === Ausente::VALOR ? $prj : $prjSinal;
         $motivos = array_filter([
             RegrasOD::sinalInvalido($tipoOD, $qS, $valor),
-            RegrasOD::valorBaixoODD($tipoOD, $valor, $this->p->oddValorMin()),
             RegrasOD::valorExcessivoODD($tipoOD, $valor, $qS, $mediaOdi, $this->p->oddValorMaxPct()),
             RegrasOD::sinaisOpostos($qS, $pS),
         ], static fn (string $m): bool => $m !== '');

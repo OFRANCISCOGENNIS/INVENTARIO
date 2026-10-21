@@ -66,8 +66,9 @@ Na ANALISE SAP x PRJ, cada linha de PEP **ODD** (desmonte) tem o preço unitári
 mesmo código nas linhas **ODI** da base. Acima de **30%** desse valor (parâmetro
 `ODD_VALOR_MAX_PCT` na CONFIG) o item fica **NÃO ADERENTE** e a obra é **reprovada**; o
 limite exato (30,0%) passa. Código que não aparece em ODI fica sem comparação. Cada caso
-também vira o alerta `ODD VALOR EXCESSIVO` na aba ALERTA CRITICO. A regra de valor mínimo
-da ODD (`ODD_VALOR_MIN`, padrão R$ -100) continua valendo junto.
+também vira o alerta `ODD VALOR EXCESSIVO` na aba ALERTA CRITICO. É a única regra de valor
+da ODD: o antigo limite fixo de R$ -100 no total da linha (`ODD_VALOR_MIN`) foi retirado,
+porque reprovava materiais de quantidade grande (cabo em kg, por exemplo) com preço normal.
 
 ## Abas persistentes
 

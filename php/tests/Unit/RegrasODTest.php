@@ -40,14 +40,6 @@ final class RegrasODTest extends TestCase
         self::assertSame('PEP ODS com valor e quantidade NEGATIVOS (esperado positivo)', RegrasOD::sinalInvalido(TipoOD::ODS, -1, -1));
     }
 
-    public function testValorBaixoODD(): void
-    {
-        self::assertSame('PEP ODD com valor R$ -150,00 abaixo do limite de R$ -100,00', RegrasOD::valorBaixoODD(TipoOD::ODD, -150, -100));
-        self::assertSame('', RegrasOD::valorBaixoODD(TipoOD::ODD, -100, -100));
-        self::assertSame('', RegrasOD::valorBaixoODD(TipoOD::ODD, -50, -100));
-        self::assertSame('', RegrasOD::valorBaixoODD(TipoOD::ODI, -150, -100));
-    }
-
     public function testValorExcessivoODD(): void
     {
         self::assertSame('PEP ODD com valor de R$ 31,00 por unidade, acima de 30% do valor do material (media ODI R$ 100,00; maximo R$ 30,00)',

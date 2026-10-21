@@ -70,11 +70,13 @@ final class AvaliadorLinhaTest extends TestCase
         self::assertTrue($av->ehAderente);
     }
 
-    public function testOddValorAbaixoDoLimite(): void
+    public function testOddComValorTotalAltoEPuNormalNaoReprova(): void
     {
-        $av = $this->a->avaliar('UC', 'PARAFUSO', -5, -5, 'ADERENTE', false, TipoOD::ODD, -150);
-        self::assertTrue($av->violaOD);
-        self::assertTrue($av->reprovaLinha);
+        // 167,19 kg de cabo a R$ 5,00/kg: so a regra dos 30% julga o valor na ODD
+        $av = $this->a->avaliar('UC', 'COND NU', -167.19, -167.19, 'ADERENTE', false, TipoOD::ODD, -835.95);
+        self::assertFalse($av->violaOD);
+        self::assertTrue($av->ehAderente);
+        self::assertFalse($av->reprovaLinha);
     }
 
     public function testSinalPelaQuantidadeDaPropriaLinha(): void

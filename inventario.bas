@@ -19,7 +19,6 @@ Private mCaboMax As Double   ' cabo isolado isento de UC abaixo deste compriment
 Private mDifCondNu As Double ' COND NU: dif ABSOLUTA tolerada (CONFIG DIF_ABS_COND_NU)
 Private mDifAbsCabo As Double ' familias DIF_ABS_FAMILIAS: dif ABSOLUTA tolerada
 Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
-Private mOddValMin As Variant ' CONFIG ODD_VALOR_MIN (Empty = padrao -100)
 Private mOddPctMax As Variant ' CONFIG ODD_VALOR_MAX_PCT (Empty = padrao 0,3)
 Private mOdiMedia As Object   ' COD normalizado -> PU medio nas linhas ODI da base
 Private mNormCache As Object ' NormStr: texto original -> normalizado (perf, ver NormStr)
@@ -1410,19 +1409,6 @@ Private Function PuSimbolicoCabo(ByVal famN As String, ByVal valor As Double, _
     PuSimbolicoCabo = (Abs(valor / qtd - puAlvo) < 0.005)
 End Function
 
-' Premissa de valor em ODD: material com VALOR abaixo do limite (padrao
-' R$ -100) e NAO ADERENTE. "Abaixo" = mais negativo: -150 viola, -100 nao.
-' Devolve a descricao da violacao, ou "" quando ok.
-Private Function ValorBaixoODD(ByVal tipoOD As String, ByVal valV As Variant, _
-                               ByVal limite As Double) As String
-    If tipoOD <> "ODD" Then Exit Function
-    Dim v As Double : v = Val0(valV)
-    If v < limite Then
-        ValorBaixoODD = "PEP ODD com valor R$ " & Format(v, "#,##0.00") & _
-                        " abaixo do limite de R$ " & Format(limite, "#,##0.00")
-    End If
-End Function
-
 ' Premissa de valor excessivo em ODD: o PU do desmonte (|VALOR| / |QTD|) pode
 ' ser no maximo pctMax (padrao 30%) do valor do material, que e o PU medio do
 ' mesmo codigo nas linhas ODI da base. Acima disso o item e NAO ADERENTE e
@@ -1498,11 +1484,6 @@ Private Function MediaPuODI(ByVal wsBase As Worksheet) As Object
     For Each k In nC.Keys
         med(k) = med(k) / nC(k)
     Next k
-End Function
-
-' Limite de ODD_VALOR_MIN (CONFIG); -100 quando a CONFIG nao foi carregada.
-Private Function LimiteValorODD() As Double
-    If IsEmpty(mOddValMin) Then LimiteValorODD = -100 Else LimiteValorODD = mOddValMin
 End Function
 
 ' Alerta POSTE ODI PU BAIXO: poste (familia contendo POSTE) em PEP ODI com
@@ -1581,9 +1562,6 @@ Private Function AvaliarLinha(tipoR As String, famR As String, _
     Dim qS As Variant
     If IsMissing(qtdSinal) Then qS = libV Else qS = qtdSinal
     av.MotivoOD = SinalInvalidoOD(tipoOD, qS, valV)
-    ' ODD: valor abaixo do limite tambem torna o item NAO ADERENTE
-    Dim mVal As String : mVal = ValorBaixoODD(tipoOD, valV, LimiteValorODD())
-    If mVal <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mVal
     ' ODD: PU acima de ODD_VALOR_MAX_PCT do valor do material (media ODI do codigo)
     Dim mExc As String : mExc = ValorExcessivoODD(tipoOD, valV, qS, mediaOdi, LimitePctODD())
     If mExc <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mExc
@@ -2202,7 +2180,6 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim puOdiMin As Double : puOdiMin = CfgD("PU_ODI_MIN", 0.01)
     Dim puOdiMax As Double : puOdiMax = CfgD("PU_ODI_MAX", 10)
     Dim puCabo As Double : puCabo = CfgD("PU_CABO_ALERTA", 0.01)
-    Dim oddLim As Double : oddLim = LimiteValorODD()
     Dim oddPct As Double : oddPct = LimitePctODD()
     Dim posteMin As Double : posteMin = CfgD("POSTE_ODI_PU_MIN", 500)
 
@@ -2338,23 +2315,6 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 11, "Preco unitario R$ " & Format(valor / qtd, "#,##0.00") & _
                 " em PEP ODI (faixa de alerta R$ " & Format(puOdiMin, "#,##0.00") & _
                 " a R$ " & Format(puOdiMax, "#,##0.00") & ")"
-            outRow = outRow + 1
-        End If
-
-        ' ODD com valor abaixo do limite - a mesma regra de AvaliarLinha, que marca
-        ' o item como NAO ADERENTE na ANALISE SAP x PRJ
-        Dim motOdd As String : motOdd = ValorBaixoODD(odTp, valor, oddLim)
-        If motOdd <> "" And codMat <> "" Then
-            AlertaCel outRow, 1, "ODD VALOR ABAIXO DO LIMITE"
-            AlertaCel outRow, 2, pep3
-            AlertaCel outRow, 3, pep4
-            AlertaCel outRow, 4, codMat
-            AlertaCel outRow, 5, descMat
-            AlertaCel outRow, 6, familia
-            AlertaCel outRow, 7, valor
-            AlertaCel outRow, 8, qtd
-            AlertaCel outRow, 10, Format(oddLim, "#,##0.00")
-            AlertaCel outRow, 11, motOdd & " - item NAO ADERENTE"
             outRow = outRow + 1
         End If
 
@@ -2736,7 +2696,6 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "UC - COD MATERIAL VAZIO":   bgA = RGB(238, 238, 238) : chip = RGB(110, 110, 110)
         Case "PU BAIXO EM ODI":           bgA = RGB(252, 231, 243) : chip = RGB(190, 24, 93)
         Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
-        Case "ODD VALOR ABAIXO DO LIMITE": bgA = RGB(252, 226, 228) : chip = RGB(153, 27, 27)
         Case "ODD VALOR EXCESSIVO":        bgA = RGB(252, 226, 228) : chip = RGB(185, 28, 28)
         Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
         Case "MEDIDOR EM PEP ODI":        bgA = RGB(237, 233, 254) : chip = RGB(109, 40, 217)
@@ -4644,7 +4603,6 @@ Private Function CfgPadrao() As Collection
     c.Add Array("PU_ODI_MIN", 0.01, "Alerta PU BAIXO EM ODI: preco unitario minimo da faixa (R$)")
     c.Add Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)")
     c.Add Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)")
-    c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
     c.Add Array("ODD_VALOR_MAX_PCT", 0.3, "ODD: PU acima desta fracao do PU medio do codigo na ODI e NAO ADERENTE (reprova)")
     c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
     c.Add Array("PRECOS_MAX_DIAS", 90, "Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO")
@@ -4718,7 +4676,6 @@ Private Sub GarantirConfig(wb As Workbook)
 
     ' valores usados em hot path (evita reparse por chamada)
     mTolAder = CfgD("TOL_ADERENCIA_PCT", 0.1)
-    mOddValMin = CfgD("ODD_VALOR_MIN", -100)
     mOddPctMax = CfgD("ODD_VALOR_MAX_PCT", 0.3)
     mCaboMax = CfgD("CABO_ISOLADO_MAX_M", 15)
     mDifCondNu = CfgD("DIF_ABS_COND_NU", 5)
@@ -6640,13 +6597,10 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PU 0,02 = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 2, 100, 0.01) = False)
     RegTest nomes, oks, det, cnt, "PuSimbolicoCabo PARAFUSO 0,01 = fora (so cabo/cond)", (PuSimbolicoCabo("PARAFUSO", 1, 100, 0.01) = False)
     RegTest nomes, oks, det, cnt, "PuSimbolicoCabo QTD zero = sem alerta", (PuSimbolicoCabo("CABO ISOLADO", 1, 0, 0.01) = False)
-    ' ODD com valor abaixo de -100 = NAO ADERENTE ("abaixo" = mais negativo):
-    RegTest nomes, oks, det, cnt, "ValorBaixoODD -150 = NAO ADERENTE", (ValorBaixoODD("ODD", -150, -100) <> "")
-    RegTest nomes, oks, det, cnt, "ValorBaixoODD -100 (limite) = ok", (ValorBaixoODD("ODD", -100, -100) = "")
-    RegTest nomes, oks, det, cnt, "ValorBaixoODD -50 = ok", (ValorBaixoODD("ODD", -50, -100) = "")
-    RegTest nomes, oks, det, cnt, "ValorBaixoODD em ODI = fora (so ODD)", (ValorBaixoODD("ODI", -150, -100) = "")
-    avT = AvaliarLinha("UC", "PARAFUSO", -5, -5, "ADERENTE", False, "ODD", -150)
-    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD valor -150: NAO ADERENTE e reprova", (avT.ViolaOD And Not avT.EhAder And avT.ReprovaLinha)
+    ' ODD so reprova por valor pela regra dos 30% (sem limite fixo em R$): o
+    ' total alto de cabo em kg com PU normal nao reprova
+    avT = AvaliarLinha("UC", "COND NU", -167.19, -167.19, "ADERENTE", False, "ODD", -835.95)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD valor -835,95 sem media ODI = sem regra de valor", (Not avT.ViolaOD And avT.EhAder)
     ' Alerta POSTE ODI PU BAIXO (preco unitario de 0 a < 500, so ODI):
     RegTest nomes, oks, det, cnt, "PosteBaratoODI POSTE RD R$ 400 = alerta", (PosteBaratoODI("ODI", "POSTE RD", 400, 1, 500) = True)
     RegTest nomes, oks, det, cnt, "PosteBaratoODI 2 postes R$ 800 (PU 400) = alerta", (PosteBaratoODI("ODI", "POSTE RD", 800, 2, 500) = True)

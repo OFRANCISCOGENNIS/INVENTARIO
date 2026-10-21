@@ -31,7 +31,7 @@ final class VisaoResultadosTest extends TestCase
         self::assertSame(-32.0, $porCod['OBRA-001.01.I|134830013']['diff'], 'PRJ - SAP');
 
         self::assertCount($v['alertas'] + 2, $v['alertasLista'], 'lista inclui os 2 apontamentos QUALIDADE DA BASE');
-        self::assertSame('OBRA-003', $v['ranking'][0]['pep3']);
+        self::assertSame('OBRA-006', $v['ranking'][0]['pep3']);
         self::assertSame(['OBRA-006', 'OBRA-007'], array_column($v['semBaixa'], 'pep'));
         self::assertNotFalse(json_encode($v, JSON_THROW_ON_ERROR));
 

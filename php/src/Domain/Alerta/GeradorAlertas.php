@@ -7,7 +7,6 @@ namespace Inventario\Domain\Alerta;
 use Inventario\Domain\Alerta\Regra\DivergenciaPrecoUnitario;
 use Inventario\Domain\Alerta\Regra\LacreMedidor;
 use Inventario\Domain\Alerta\Regra\MedidorEmOdi;
-use Inventario\Domain\Alerta\Regra\OddValorAbaixoLimite;
 use Inventario\Domain\Alerta\Regra\OddValorExcessivo;
 use Inventario\Domain\Alerta\Regra\OdiSemUcSemCom;
 use Inventario\Domain\Alerta\Regra\PepSemUc;
@@ -54,7 +53,6 @@ final class GeradorAlertas
                 new PosteEmPepMS('S'),
                 new SinalPorTipoOD(),
                 new PuBaixoEmOdi($p->numero('PU_ODI_MIN'), $p->numero('PU_ODI_MAX')),
-                new OddValorAbaixoLimite($p->oddValorMin()),
                 new OddValorExcessivo($mediasOdi, $p->oddValorMaxPct()),
                 new MedidorEmOdi(),
                 new PosteOdiPuBaixo($p->numero('POSTE_ODI_PU_MIN')),

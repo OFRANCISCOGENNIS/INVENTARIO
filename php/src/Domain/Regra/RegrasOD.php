@@ -48,21 +48,6 @@ final class RegrasOD
         return $errado === '' ? '' : "PEP {$tipo->value} com {$errado} (esperado {$esperado})";
     }
 
-    /** ODD com VALOR abaixo do limite ("abaixo" = mais negativo: -150 viola, -100 nao). */
-    public static function valorBaixoODD(TipoOD $tipo, mixed $valor, float $limite): string
-    {
-        if ($tipo !== TipoOD::ODD) {
-            return '';
-        }
-        $v = Numero::val0($valor);
-        if ($v < $limite) {
-            return 'PEP ODD com valor R$ ' . Formatador::decimal2($v)
-                . ' abaixo do limite de R$ ' . Formatador::decimal2($limite);
-        }
-
-        return '';
-    }
-
     /**
      * ODD com valor excessivo: o PU do desmonte (|VALOR| / |QTD|) pode ser no
      * maximo $pctMax do valor do material, que e o PU medio do codigo nas
