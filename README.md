@@ -59,6 +59,16 @@ CONFIG) é discrepância, acima ou abaixo da média. Código com um único lanç
 tem com o que ser comparado e fica de fora. A contagem entra no DIAGNÓSTICO da obra e no
 SCORE do ranking: 2 pontos por discrepância, até 12 (`PESO_DISCREP` e `CAP_DISCREP` na CONFIG).
 
+## Valor excessivo em ODD
+
+Na ANALISE SAP x PRJ, cada linha de PEP **ODD** (desmonte) tem o preço unitário
+(|VALOR| / |MAT LIB SAP|) comparado com o **valor do material**: o preço unitário médio do
+mesmo código nas linhas **ODI** da base. Acima de **30%** desse valor (parâmetro
+`ODD_VALOR_MAX_PCT` na CONFIG) o item fica **NÃO ADERENTE** e a obra é **reprovada**; o
+limite exato (30,0%) passa. Código que não aparece em ODI fica sem comparação. Cada caso
+também vira o alerta `ODD VALOR EXCESSIVO` na aba ALERTA CRITICO. A regra de valor mínimo
+da ODD (`ODD_VALOR_MIN`, padrão R$ -100) continua valendo junto.
+
 ## Abas persistentes
 
 A macro apaga e recria as abas de análise a cada execução, mas estas **não** entram

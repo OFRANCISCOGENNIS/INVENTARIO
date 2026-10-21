@@ -28,6 +28,18 @@ final class AvaliadorLinhaTest extends TestCase
         self::assertTrue($av->avaliavel);
     }
 
+    public function testOddComValorExcessivoReprova(): void
+    {
+        $av = $this->a->avaliar('UC', 'PARAFUSO', -1, -1, 'ADERENTE', false, TipoOD::ODD, -50, mediaOdi: 100.0);
+        self::assertFalse($av->ehAderente);
+        self::assertTrue($av->reprovaLinha);
+        self::assertStringContainsString('acima de 30% do valor do material', $av->motivoOD);
+
+        $ok = $this->a->avaliar('UC', 'PARAFUSO', -1, -1, 'ADERENTE', false, TipoOD::ODD, -20, mediaOdi: 100.0);
+        self::assertTrue($ok->ehAderente);
+        self::assertFalse($ok->reprovaLinha);
+    }
+
     public function testUcZeradoComObraTodaZerada(): void
     {
         $av = $this->a->avaliar('UC', 'PARAFUSO', 0, 0, 'NULO', true);

@@ -34,6 +34,7 @@ final class AvaliadorLinha
      * @param bool $ucZeradoReprova true quando TODOS os UC do PEP3 estao zerados
      * @param mixed $qtdSinal quantidade da PROPRIA linha para as regras de sinal (ausente = $lib)
      * @param mixed $prjSinal PRJ da PROPRIA linha para sinais opostos (ausente = $prj)
+     * @param float|null $mediaOdi PU medio do codigo na ODI (regra de valor excessivo em ODD)
      */
     public function avaliar(
         string $tipo,
@@ -46,6 +47,7 @@ final class AvaliadorLinha
         mixed $valor = 0,
         mixed $qtdSinal = Ausente::VALOR,
         mixed $prjSinal = Ausente::VALOR,
+        ?float $mediaOdi = null,
     ): AvaliacaoLinha {
         $ucZerado = RegraAderencia::materialUCZerado($tipo, $lib, $prj) && $ucZeradoReprova;
         $ehAder = $this->aderencia->ehAderente($fam, $lib, $prj, $sitNorm) && !$ucZerado;
@@ -55,6 +57,7 @@ final class AvaliadorLinha
         $motivos = array_filter([
             RegrasOD::sinalInvalido($tipoOD, $qS, $valor),
             RegrasOD::valorBaixoODD($tipoOD, $valor, $this->p->oddValorMin()),
+            RegrasOD::valorExcessivoODD($tipoOD, $valor, $qS, $mediaOdi, $this->p->oddValorMaxPct()),
             RegrasOD::sinaisOpostos($qS, $pS),
         ], static fn (string $m): bool => $m !== '');
         $motivoOD = implode('; ', $motivos);

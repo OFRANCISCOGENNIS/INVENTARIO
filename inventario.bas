@@ -20,6 +20,8 @@ Private mDifCondNu As Double ' COND NU: dif ABSOLUTA tolerada (CONFIG DIF_ABS_CO
 Private mDifAbsCabo As Double ' familias DIF_ABS_FAMILIAS: dif ABSOLUTA tolerada
 Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
 Private mOddValMin As Variant ' CONFIG ODD_VALOR_MIN (Empty = padrao -100)
+Private mOddPctMax As Variant ' CONFIG ODD_VALOR_MAX_PCT (Empty = padrao 0,3)
+Private mOdiMedia As Object   ' COD normalizado -> PU medio nas linhas ODI da base
 Private mNormCache As Object ' NormStr: texto original -> normalizado (perf, ver NormStr)
 
 ' Materiais equivalentes (aba EQUIVALENCIAS): COD normalizado -> GRUPO, e
@@ -323,6 +325,9 @@ Public Sub GerarInventario()
         Exit Sub
     End If
     LogAdd "CONFIG carregada e base validada: " & wsBase.Name
+    ' PU medio de cada codigo na ODI: referencia da regra de valor excessivo em
+    ' ODD (ANALISE SAP x PRJ e ALERTA CRITICO)
+    Set mOdiMedia = MediaPuODI(wsBase)
 
     Application.DisplayAlerts = False
     On Error Resume Next
@@ -587,9 +592,11 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If eqAt1 Then
                 libAv = eqLib(eqK1) : prjAv = eqPrj(eqK1) : sitAv = SitPorQuantidade(libAv, prjAv)
             End If
+            Dim medR As Double : medR = 0
+            If srcIdx(5) > 0 Then medR = MediaOdiCod(baseData(i, srcIdx(5)))
             Dim av As tAvalLinha
             av = AvaliarLinha(tipoR, famR, libAv, prjAv, sitAv, TodosUCZerados(p3nUC, p3nUC0, pep3R), _
-                              ClassificarOD(p4Raw, tpPepR), valR, libV, prjV)
+                              ClassificarOD(p4Raw, tpPepR), valR, libV, prjV, medR)
             If eqAt1 Then AjustarAderEquiv av, libAv, prjAv
             ' Regras de LINHA que reprovam o PEP3 inteiro, seja qual for o tipo do
             ' item (o veredito normal so conta UC e COM critico: um COM comum assim
@@ -699,9 +706,11 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
             If eqAt2 Then
                 libV = eqLib(eqK2) : prjV = eqPrj(eqK2) : sitR = SitPorQuantidade(libV, prjV)
             End If
+            Dim medRow As Double : medRow = 0
+            If srcIdx(5) > 0 Then medRow = MediaOdiCod(baseData(i, srcIdx(5)))
             Dim avRow As tAvalLinha
             avRow = AvaliarLinha(tipoRow, famR, libV, prjV, sitR, TodosUCZerados(p3nUC, p3nUC0, p3row), _
-                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow, prjRow)
+                                 ClassificarOD(p4RawRow, tpPepRow), valRow, libRow, prjRow, medRow)
             If eqAt2 Then AjustarAderEquiv avRow, libV, prjV
 
             Dim sitText As String
@@ -1414,6 +1423,83 @@ Private Function ValorBaixoODD(ByVal tipoOD As String, ByVal valV As Variant, _
     End If
 End Function
 
+' Premissa de valor excessivo em ODD: o PU do desmonte (|VALOR| / |QTD|) pode
+' ser no maximo pctMax (padrao 30%) do valor do material, que e o PU medio do
+' mesmo codigo nas linhas ODI da base. Acima disso o item e NAO ADERENTE e
+' reprova a obra. Sem media (codigo fora da ODI) ou QTD zero, nao compara.
+' Devolve a descricao da violacao, ou "" quando ok.
+Private Function ValorExcessivoODD(ByVal tipoOD As String, ByVal valV As Variant, _
+        ByVal qtdV As Variant, ByVal media As Double, ByVal pctMax As Double) As String
+    If tipoOD <> "ODD" Or media <= 0 Then Exit Function
+    Dim q As Double : q = Abs(Val0(qtdV))
+    If q = 0 Then Exit Function
+    Dim pu As Double : pu = Abs(Val0(valV)) / q
+    If pu > pctMax * media + 0.000000001 Then
+        ValorExcessivoODD = "PEP ODD com valor de R$ " & Format(pu, "#,##0.00") & _
+            " por unidade, acima de " & Format(pctMax, "0%") & " do valor do material (media ODI R$ " & _
+            Format(media, "#,##0.00") & "; maximo R$ " & Format(pctMax * media, "#,##0.00") & ")"
+    End If
+End Function
+
+' ODD_VALOR_MAX_PCT (CONFIG); 0,3 quando a CONFIG nao foi carregada.
+Private Function LimitePctODD() As Double
+    If IsEmpty(mOddPctMax) Then LimitePctODD = 0.3 Else LimitePctODD = mOddPctMax
+End Function
+
+' PU medio do codigo na ODI (0 quando o codigo nao aparece em ODI ou as medias
+' nao foram calculadas). Teste aninhado: ler chave inexistente cria a chave.
+Private Function MediaOdiCod(ByVal cod As Variant) As Double
+    If mOdiMedia Is Nothing Then Exit Function
+    If IsError(cod) Then Exit Function
+    Dim c As String : c = NormCod(cod)
+    If c = "" Then Exit Function
+    If mOdiMedia.Exists(c) Then MediaOdiCod = mOdiMedia(c)
+End Function
+
+' PU medio (VALOR / MAT LIB SAP) de cada codigo nas linhas ODI da base: o
+' "valor do material". Mesma conta da discrepancia de valor (DiscrepValorODI).
+Private Function MediaPuODI(ByVal wsBase As Worksheet) As Object
+    Dim med As Object : Set med = CreateObject("Scripting.Dictionary")
+    Set MediaPuODI = med
+    If wsBase Is Nothing Then Exit Function
+    Dim mapa As Object : Set mapa = MapaColunas(wsBase)
+    Dim iP4 As Long : iP4 = ColIdx(mapa, "PEP4NIVEL")
+    Dim iCod As Long : iCod = ColIdx(mapa, "COD MAT")
+    Dim iVal As Long : iVal = ColIdx(mapa, "VALOR")
+    Dim iQtd As Long : iQtd = ColIdx(mapa, "MAT LIB SAP")
+    Dim iTpp As Long : iTpp = ColIdx(mapa, "TIPO PEP")
+    If iP4 = 0 Or iCod = 0 Or iVal = 0 Or iQtd = 0 Then Exit Function
+    Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
+    Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, iP4).End(xlUp).Row
+    If lastR < 2 Then Exit Function
+    Dim d As Variant : d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+    Dim nC As Object : Set nC = CreateObject("Scripting.Dictionary")
+    Dim i As Long, p4 As String, tpp As String, cod As String, q As Double, pu As Double
+    For i = 1 To UBound(d, 1)
+        p4 = "" : tpp = "" : cod = ""
+        If Not IsError(d(i, iP4)) Then p4 = Trim(CStr(d(i, iP4)))
+        If iTpp > 0 Then
+            If Not IsError(d(i, iTpp)) Then tpp = CStr(d(i, iTpp))
+        End If
+        If Not IsError(d(i, iCod)) Then cod = NormCod(d(i, iCod))
+        q = Val0(d(i, iQtd))
+        If p4 <> "" And cod <> "" And q <> 0 Then
+            If ClassificarOD(p4, tpp) = "ODI" Then
+                pu = Val0(d(i, iVal)) / q
+                If med.Exists(cod) Then
+                    med(cod) = med(cod) + pu : nC(cod) = nC(cod) + 1
+                Else
+                    med.Add cod, pu : nC.Add cod, 1
+                End If
+            End If
+        End If
+    Next i
+    Dim k As Variant
+    For Each k In nC.Keys
+        med(k) = med(k) / nC(k)
+    Next k
+End Function
+
 ' Limite de ODD_VALOR_MIN (CONFIG); -100 quando a CONFIG nao foi carregada.
 Private Function LimiteValorODD() As Double
     If IsEmpty(mOddValMin) Then LimiteValorODD = -100 Else LimiteValorODD = mOddValMin
@@ -1482,7 +1568,8 @@ Private Function AvaliarLinha(tipoR As String, famR As String, _
                               Optional ByVal tipoOD As String = "", _
                               Optional ByVal valV As Variant = 0, _
                               Optional ByVal qtdSinal As Variant, _
-                              Optional ByVal prjSinal As Variant) As tAvalLinha
+                              Optional ByVal prjSinal As Variant, _
+                              Optional ByVal mediaOdi As Double = 0) As tAvalLinha
     Dim av As tAvalLinha
     av.UcZerado = MaterialUCZerado(tipoR, libV, prjV) And ucZeradoReprova
     av.EhAder = EhAderente(famR, libV, prjV, sitRNorm)
@@ -1497,6 +1584,9 @@ Private Function AvaliarLinha(tipoR As String, famR As String, _
     ' ODD: valor abaixo do limite tambem torna o item NAO ADERENTE
     Dim mVal As String : mVal = ValorBaixoODD(tipoOD, valV, LimiteValorODD())
     If mVal <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mVal
+    ' ODD: PU acima de ODD_VALOR_MAX_PCT do valor do material (media ODI do codigo)
+    Dim mExc As String : mExc = ValorExcessivoODD(tipoOD, valV, qS, mediaOdi, LimitePctODD())
+    If mExc <> "" Then av.MotivoOD = av.MotivoOD & IIf(av.MotivoOD <> "", "; ", "") & mExc
     ' SAP e PRJ com sinais opostos: confere as quantidades da PROPRIA linha
     ' (prjSinal/qtdSinal), nao o total de um grupo de equivalentes
     Dim pS As Variant
@@ -2113,6 +2203,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     Dim puOdiMax As Double : puOdiMax = CfgD("PU_ODI_MAX", 10)
     Dim puCabo As Double : puCabo = CfgD("PU_CABO_ALERTA", 0.01)
     Dim oddLim As Double : oddLim = LimiteValorODD()
+    Dim oddPct As Double : oddPct = LimitePctODD()
     Dim posteMin As Double : posteMin = CfgD("POSTE_ODI_PU_MIN", 500)
 
     Dim kk As Variant
@@ -2264,6 +2355,26 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
             AlertaCel outRow, 8, qtd
             AlertaCel outRow, 10, Format(oddLim, "#,##0.00")
             AlertaCel outRow, 11, motOdd & " - item NAO ADERENTE"
+            outRow = outRow + 1
+        End If
+
+        ' ODD com PU acima de ODD_VALOR_MAX_PCT do valor do material (media ODI do
+        ' codigo) - a mesma regra de AvaliarLinha, que reprova a obra
+        Dim medOdd As Double : medOdd = 0
+        If idxCod > 0 Then medOdd = MediaOdiCod(d(i, idxCod))
+        Dim motExc As String : motExc = ValorExcessivoODD(odTp, valor, qtd, medOdd, oddPct)
+        If motExc <> "" And codMat <> "" Then
+            AlertaCel outRow, 1, "ODD VALOR EXCESSIVO"
+            AlertaCel outRow, 2, pep3
+            AlertaCel outRow, 3, pep4
+            AlertaCel outRow, 4, codMat
+            AlertaCel outRow, 5, descMat
+            AlertaCel outRow, 6, familia
+            AlertaCel outRow, 7, valor
+            AlertaCel outRow, 8, qtd
+            AlertaCel outRow, 9, Abs(valor) / Abs(qtd)
+            AlertaCel outRow, 10, Format(oddPct * medOdd, "#,##0.00")
+            AlertaCel outRow, 11, motExc & " - item NAO ADERENTE, obra reprovada"
             outRow = outRow + 1
         End If
 
@@ -2626,6 +2737,7 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "PU BAIXO EM ODI":           bgA = RGB(252, 231, 243) : chip = RGB(190, 24, 93)
         Case "PU 0,01 EM CABO/COND":      bgA = RGB(255, 237, 213) : chip = RGB(194, 65, 12)
         Case "ODD VALOR ABAIXO DO LIMITE": bgA = RGB(252, 226, 228) : chip = RGB(153, 27, 27)
+        Case "ODD VALOR EXCESSIVO":        bgA = RGB(252, 226, 228) : chip = RGB(185, 28, 28)
         Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
         Case "MEDIDOR EM PEP ODI":        bgA = RGB(237, 233, 254) : chip = RGB(109, 40, 217)
         Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
@@ -4533,6 +4645,7 @@ Private Function CfgPadrao() As Collection
     c.Add Array("PU_ODI_MAX", 10, "Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)")
     c.Add Array("PU_CABO_ALERTA", 0.01, "Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)")
     c.Add Array("ODD_VALOR_MIN", -100, "ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE")
+    c.Add Array("ODD_VALOR_MAX_PCT", 0.3, "ODD: PU acima desta fracao do PU medio do codigo na ODI e NAO ADERENTE (reprova)")
     c.Add Array("POSTE_ODI_PU_MIN", 500, "Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)")
     c.Add Array("PRECOS_MAX_DIAS", 90, "Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO")
     c.Add Array("DISCREP_VALOR_PCT", 0.3, "Discrepancia de valor de material (ODI): PU fora de +/- esta fracao da media do codigo")
@@ -4606,6 +4719,7 @@ Private Sub GarantirConfig(wb As Workbook)
     ' valores usados em hot path (evita reparse por chamada)
     mTolAder = CfgD("TOL_ADERENCIA_PCT", 0.1)
     mOddValMin = CfgD("ODD_VALOR_MIN", -100)
+    mOddPctMax = CfgD("ODD_VALOR_MAX_PCT", 0.3)
     mCaboMax = CfgD("CABO_ISOLADO_MAX_M", 15)
     mDifCondNu = CfgD("DIF_ABS_COND_NU", 5)
     mDifAbsCabo = CfgD("DIF_ABS_CABO", 15)
@@ -6618,6 +6732,17 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "ParcelaRisco 6 discrepancias x 2 = 12 (teto)", (ParcelaRisco(6, 2, 12) = 12)
     RegTest nomes, oks, det, cnt, "ParcelaRisco 10 discrepancias x 2 = teto 12", (ParcelaRisco(10, 2, 12) = 12)
     RegTest nomes, oks, det, cnt, "ParcelaRisco sem discrepancia = 0", (ParcelaRisco(0, 2, 12) = 0)
+    ' ODD valor excessivo: PU do desmonte ate 30% do PU medio do codigo na ODI
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD PU 31 x media 100 = reprova", (ValorExcessivoODD("ODD", -31, -1, 100, 0.3) <> "")
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD PU 30 (limite) = ok", (ValorExcessivoODD("ODD", -60, -2, 100, 0.3) = "")
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD PU 10 = ok", (ValorExcessivoODD("ODD", -10, -1, 100, 0.3) = "")
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD sem media ODI = sem comparacao", (ValorExcessivoODD("ODD", -500, -1, 0, 0.3) = "")
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD QTD zero = sem comparacao", (ValorExcessivoODD("ODD", -500, 0, 100, 0.3) = "")
+    RegTest nomes, oks, det, cnt, "ValorExcessivoODD em ODI = fora (so ODD)", (ValorExcessivoODD("ODI", 500, 1, 100, 0.3) = "")
+    avT = AvaliarLinha("UC", "PARAFUSO", -1, -1, "ADERENTE", False, "ODD", -50, , , 100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD PU 50 x media ODI 100 = NAO ADERENTE e reprova", (Not avT.EhAder And avT.ReprovaLinha And avT.ViolaOD)
+    avT = AvaliarLinha("UC", "PARAFUSO", -1, -1, "ADERENTE", False, "ODD", -20, , , 100)
+    RegTest nomes, oks, det, cnt, "AvaliarLinha ODD PU 20 x media ODI 100 = aderente", (avT.EhAder And Not avT.ReprovaLinha)
     ' Ordenacao estavel do ranking/discrepancias: k1 desc, empate k2 desc, empate total = ordem de entrada
     Dim oiT(0 To 4) As Long, oiK1(0 To 4) As Double, oiK2(0 To 4) As Double, oiI As Long
     oiK1(0) = 5 : oiK1(1) = 9 : oiK1(2) = 5 : oiK1(3) = 9 : oiK1(4) = 5

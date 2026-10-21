@@ -37,6 +37,7 @@ final class Parametros
         'PU_ODI_MAX' => [10, 'Alerta PU BAIXO EM ODI: preco unitario maximo da faixa (R$)'],
         'PU_CABO_ALERTA' => [0.01, 'Alerta PU 0,01 EM CABO/COND: preco unitario simbolico (R$)'],
         'ODD_VALOR_MIN' => [-100, 'ODD: material com VALOR abaixo deste limite (R$) e NAO ADERENTE'],
+        'ODD_VALOR_MAX_PCT' => [0.3, 'ODD: PU acima desta fracao do PU medio do codigo na ODI e NAO ADERENTE (reprova)'],
         'POSTE_ODI_PU_MIN' => [500, 'Alerta POSTE ODI PU BAIXO: poste em ODI com preco unitario abaixo de (R$)'],
         'PRECOS_MAX_DIAS' => [90, 'Diagnostico: arquivo da base de precos mais antigo que isto (dias) gera ATENCAO'],
         'DISCREP_VALOR_PCT' => [0.3, 'Discrepancia de valor de material (ODI): PU fora de +/- esta fracao da media do codigo'],
@@ -121,6 +122,11 @@ final class Parametros
     public function oddValorMin(): float
     {
         return $this->numero('ODD_VALOR_MIN');
+    }
+
+    public function oddValorMaxPct(): float
+    {
+        return $this->numero('ODD_VALOR_MAX_PCT');
     }
 
     /** @return array<string, true> tokens sem espaco ("CHFUS", "PARARAIO") */

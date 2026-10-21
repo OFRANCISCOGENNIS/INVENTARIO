@@ -55,6 +55,17 @@ final class DiscrepanciaValorTest extends TestCase
             $r[2]->observacao());
     }
 
+    public function testMediasOdiPorCodigo(): void
+    {
+        $base = self::base([
+            ['OB-1', 'OB-1.01.I', '1', 'PARAFUSO', 1000, 10],
+            ['OB-1', 'OB-1.02.I', '1', 'PARAFUSO', 1600, 10],
+            ['OB-2', 'OB-2.01.D', '1', 'PARAFUSO', -99999, -1],
+            ['OB-3', 'OB-3.01.M', '2', 'ARRUELA', 50, 1],
+        ]);
+        self::assertSame(['1' => 130.0], DiscrepanciaValor::mediasOdi($base), 'so ODI; ODD e ODM ficam fora da media');
+    }
+
     public function testEntraNoScoreDoRanking(): void
     {
         $base = self::base([

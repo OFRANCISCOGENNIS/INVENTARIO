@@ -48,6 +48,17 @@ final class RegrasODTest extends TestCase
         self::assertSame('', RegrasOD::valorBaixoODD(TipoOD::ODI, -150, -100));
     }
 
+    public function testValorExcessivoODD(): void
+    {
+        self::assertSame('PEP ODD com valor de R$ 31,00 por unidade, acima de 30% do valor do material (media ODI R$ 100,00; maximo R$ 30,00)',
+            RegrasOD::valorExcessivoODD(TipoOD::ODD, -31, -1, 100.0, 0.3));
+        self::assertSame('', RegrasOD::valorExcessivoODD(TipoOD::ODD, -60, -2, 100.0, 0.3), 'limite exato (30%) nao reprova');
+        self::assertSame('', RegrasOD::valorExcessivoODD(TipoOD::ODD, -10, -1, 100.0, 0.3));
+        self::assertSame('', RegrasOD::valorExcessivoODD(TipoOD::ODD, -500, -1, null, 0.3), 'codigo fora da ODI: sem comparacao');
+        self::assertSame('', RegrasOD::valorExcessivoODD(TipoOD::ODD, -500, 0, 100.0, 0.3), 'QTD zero');
+        self::assertSame('', RegrasOD::valorExcessivoODD(TipoOD::ODI, 500, 1, 100.0, 0.3), 'so ODD');
+    }
+
     public function testNegativoEmODI(): void
     {
         self::assertTrue(RegrasOD::negativoEmODI(TipoOD::ODI, -10));

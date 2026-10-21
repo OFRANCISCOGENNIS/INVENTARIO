@@ -8,6 +8,7 @@ use Inventario\Domain\Alerta\Regra\DivergenciaPrecoUnitario;
 use Inventario\Domain\Alerta\Regra\LacreMedidor;
 use Inventario\Domain\Alerta\Regra\MedidorEmOdi;
 use Inventario\Domain\Alerta\Regra\OddValorAbaixoLimite;
+use Inventario\Domain\Alerta\Regra\OddValorExcessivo;
 use Inventario\Domain\Alerta\Regra\OdiSemUcSemCom;
 use Inventario\Domain\Alerta\Regra\PepSemUc;
 use Inventario\Domain\Alerta\Regra\PosteEmPepMS;
@@ -40,8 +41,11 @@ final class GeradorAlertas
     ) {
     }
 
-    /** @param list<LinhaPrecoUnitario> $precoUnitario */
-    public static function padrao(Parametros $p, PrecosReferencia $precos, array $precoUnitario): self
+    /**
+     * @param list<LinhaPrecoUnitario> $precoUnitario
+     * @param array<string, float> $mediasOdi codigo => PU medio na ODI (ODD VALOR EXCESSIVO)
+     */
+    public static function padrao(Parametros $p, PrecosReferencia $precos, array $precoUnitario, array $mediasOdi = []): self
     {
         return new self(
             [new OdiSemUcSemCom(), new PepSemUc()],
@@ -51,6 +55,7 @@ final class GeradorAlertas
                 new SinalPorTipoOD(),
                 new PuBaixoEmOdi($p->numero('PU_ODI_MIN'), $p->numero('PU_ODI_MAX')),
                 new OddValorAbaixoLimite($p->oddValorMin()),
+                new OddValorExcessivo($mediasOdi, $p->oddValorMaxPct()),
                 new MedidorEmOdi(),
                 new PosteOdiPuBaixo($p->numero('POSTE_ODI_PU_MIN')),
                 new PuSimbolicoCabo($p->numero('PU_CABO_ALERTA')),

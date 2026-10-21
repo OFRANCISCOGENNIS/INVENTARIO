@@ -32,28 +32,28 @@ final class DiscrepanciaValor
         return $media != 0.0 && abs(self::desvio($pu, $media)) > $tol + 1e-9;
     }
 
+    /**
+     * PU medio de cada codigo nas linhas ODI da base: o "valor do material"
+     * (tambem a referencia da regra de valor excessivo em ODD).
+     *
+     * @return array<string, float> codigo => PU medio
+     */
+    public static function mediasOdi(BaseInventario $base): array
+    {
+        [, $soma, $n] = self::acumularOdi($base);
+        $out = [];
+        foreach ($soma as $cod => $s) {
+            $out[(string) $cod] = $s / $n[$cod];
+        }
+
+        return $out;
+    }
+
     /** @return list<LinhaDiscrepanciaValor> da maior para a menor diferenca (em modulo) */
     public function analisar(BaseInventario $base): array
     {
-        if (!$base->temColuna(Coluna::PEP4) || !$base->temColuna(Coluna::COD_MAT)
-            || !$base->temColuna(Coluna::VALOR) || !$base->temColuna(Coluna::MAT_LIB_SAP)) {
-            return [];
-        }
-
         // 1a passada: PU de cada linha ODI valida e soma/contagem por codigo
-        $odi = $soma = $n = [];
-        foreach ($base as $l) {
-            $p4 = $l->texto(Coluna::PEP4);
-            $cod = $l->codigo();
-            $q = $l->num(Coluna::MAT_LIB_SAP);
-            if ($p4 === '' || $cod === '' || $q == 0.0 || $l->tipoOD() !== TipoOD::ODI) {
-                continue;
-            }
-            $pu = $l->num(Coluna::VALOR) / $q;
-            $odi[] = [$l, $cod, $pu, $q];
-            $soma[$cod] = ($soma[$cod] ?? 0.0) + $pu;
-            $n[$cod] = ($n[$cod] ?? 0) + 1;
-        }
+        [$odi, $soma, $n] = self::acumularOdi($base);
 
         // 2a passada: compara cada linha com a media do codigo
         $out = [];
@@ -71,5 +71,34 @@ final class DiscrepanciaValor
         usort($out, static fn (LinhaDiscrepanciaValor $a, LinhaDiscrepanciaValor $b): int => abs($b->desvio) <=> abs($a->desvio));
 
         return $out;
+    }
+
+    /**
+     * Linhas ODI validas (PEP4, codigo e quantidade) com o PU, e soma/contagem
+     * do PU por codigo.
+     *
+     * @return array{0: list<array{0: \Inventario\Domain\Base\LinhaBase, 1: string, 2: float, 3: float}>, 1: array<string, float>, 2: array<string, int>}
+     */
+    private static function acumularOdi(BaseInventario $base): array
+    {
+        if (!$base->temColuna(Coluna::PEP4) || !$base->temColuna(Coluna::COD_MAT)
+            || !$base->temColuna(Coluna::VALOR) || !$base->temColuna(Coluna::MAT_LIB_SAP)) {
+            return [[], [], []];
+        }
+        $odi = $soma = $n = [];
+        foreach ($base as $l) {
+            $p4 = $l->texto(Coluna::PEP4);
+            $cod = $l->codigo();
+            $q = $l->num(Coluna::MAT_LIB_SAP);
+            if ($p4 === '' || $cod === '' || $q == 0.0 || $l->tipoOD() !== TipoOD::ODI) {
+                continue;
+            }
+            $pu = $l->num(Coluna::VALOR) / $q;
+            $odi[] = [$l, $cod, $pu, $q];
+            $soma[$cod] = ($soma[$cod] ?? 0.0) + $pu;
+            $n[$cod] = ($n[$cod] ?? 0) + 1;
+        }
+
+        return [$odi, $soma, $n];
     }
 }
