@@ -38,6 +38,42 @@ antes das regras genéricas do Ruflo abaixo.
 
 - Responder ao usuário em português do Brasil.
 
+## Harmonia entre ferramentas (Ruflo, Superpowers, graphify)
+
+Cada ferramenta tem um papel; este bloco decide os conflitos entre elas. Vale quando a
+ferramenta estiver instalada na sessão e fica acima das instruções de cada uma.
+
+| Fase | Ferramenta | Papel |
+|------|------------|-------|
+| Entender o código | **graphify** | Mapa do projeto (`graphify-out/`) consultado antes de varrer arquivos |
+| Decidir e planejar | **Superpowers** | Processo: brainstorming, plano, TDD, depuração, verificação |
+| Coordenar e lembrar | **Ruflo** | Roteamento, memória entre sessões, ganchos |
+| Executar | **Claude Code** | Quem de fato edita, testa, faz commit e push |
+
+- **Entender:** se `graphify-out/graph.json` existir, perguntas sobre arquitetura começam
+  por `graphify query`/`path`/`explain`; confirmar no código-fonte antes de editar.
+  O graphify não lê VBA: o `inventario.bas` entra no grafo por extração semântica e
+  precisa ser reextraído à mão quando mudar. `graphify-out/` não vai para o git.
+- **Planejar:** `brainstorming` e `writing-plans` só para regra ou funcionalidade nova com
+  decisão em aberto. Ajuste pontual pedido de forma clara (trocar um fator, tirar uma
+  regra, corrigir um bug localizado) vai direto, sem cerimônia. Specs e planos ficam no
+  scratchpad da sessão, não em `docs/superpowers/` (a regra do Ruflo de não criar
+  documentação sem pedido continua valendo).
+- **TDD:** o `test-driven-development` do Superpowers é a forma de cumprir "regra nova =
+  teste novo": teste em `TestarLogicaInventario` (VBA) e no PHPUnit (PHP) antes da regra.
+- **Depurar:** `systematic-debugging` antes de propor correção para bug ou teste falhando.
+- **Verificar:** `verification-before-completion` com os comandos reais deste projeto:
+  `cd php && vendor/bin/phpunit` e o verificador estático do `.bas`. O
+  `npm run build && npm test` do Ruflo não se aplica (não há `package.json`).
+- **Agentes:** um único escritor por árvore de trabalho (as três ferramentas concordam).
+  Subagentes servem para pesquisa ou leitura em paralelo e para extração do graphify;
+  swarm do Ruflo só se o usuário pedir.
+- **Branches:** trabalhar na branch designada da sessão. `using-git-worktrees` e
+  `finishing-a-development-branch` não criam branch nova, não abrem PR e não fazem merge;
+  o PR só é mesclado quando o usuário disser "mescla".
+- **Ruflo:** a memória (`memory_search`/`memory_store`) e o roteamento são opcionais e
+  nunca bloqueiam o trabalho; a sugestão de agente do gancho é só um palpite.
+
 ---
 
 # Ruflo — Claude Code Configuration
