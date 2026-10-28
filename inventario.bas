@@ -22,6 +22,14 @@ Private mFamDifAbs As Object ' tokens normalizados das familias com dif absoluta
 Private mOddPctMax As Variant ' CONFIG ODD_VALOR_MAX_PCT (Empty = padrao 0,3)
 Private mOdiMedia As Object   ' COD normalizado -> PU medio nas linhas ODI da base
 Private mNormCache As Object ' NormStr: texto original -> normalizado (perf, ver NormStr)
+' Base de inventario lida UMA vez por execucao (perf: as etapas liam a aba
+' inteira de novo, 7 vezes). Chave = arquivo|aba|ultima linha|ultima coluna.
+Private mBaseArr As Variant
+Private mBaseChave As String
+' TemPalavra: ultima descricao vista e sua forma " PALAVRA PALAVRA " (a
+' classificacao testa ate 13 termos seguidos na mesma descricao).
+Private mTpDesc As String
+Private mTpForma As String
 
 ' Materiais equivalentes (aba EQUIVALENCIAS): COD normalizado -> GRUPO, e
 ' GRUPO -> lista legivel dos codigos ("105300003 = 105300005").
@@ -288,6 +296,7 @@ Public Sub GerarInventario()
 
     Set mFaixaCache = Nothing   ' limpa cache de precos para recarregar a base atual
     Set mNormCache = Nothing    ' libera a memoria do cache de NormStr da execucao anterior
+    LiberarBaseArr              ' base pode ter sido editada desde a ultima execucao
     mUltimoOk = False : mAvisoLote = ""
 
     Dim wb      As Workbook
@@ -410,6 +419,7 @@ Public Sub GerarInventario()
 
     LogAdd "Fim da geracao"
     Call GravarLog(wb)
+    LiberarBaseArr
 
     Application.ScreenUpdating = True
     Application.Calculation = xlCalculationAutomatic
@@ -442,6 +452,7 @@ Public Sub GerarInventario()
     Exit Sub
 
 ErrHandler:
+    LiberarBaseArr
     Application.ScreenUpdating = True
     Application.Calculation = xlCalculationAutomatic
     Application.EnableEvents = True
@@ -504,7 +515,7 @@ Private Sub ProcessarSAPxPRJ(wsBase As Worksheet, wsDet As Worksheet)
 
     If lastRow >= 2 Then
         Dim baseData As Variant
-        baseData = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastRow, lastC)).Value
+        baseData = LerBaseArr(wsBase, lastRow, lastC)
         nRows = lastRow - 1
 
         Dim aprova As Object : Set aprova = CreateObject("Scripting.Dictionary")
@@ -1075,18 +1086,37 @@ End Function
 ' "ELO" em PARALELO, "ANEL" em PAINEL etc.). Virgulas/parenteses viram
 ' separadores. descNorm ja vem de NormStr.
 Private Function TemPalavra(descNorm As String, termo As String) As Boolean
-    Dim s As String, i As Long, ch As String
-    s = " "
-    For i = 1 To Len(descNorm)
-        ch = Mid$(descNorm, i, 1)
-        If (ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Then
-            s = s & ch
-        Else
-            s = s & " "
-        End If
-    Next i
-    TemPalavra = (InStr(s & " ", " " & termo & " ") > 0)
+    If descNorm <> mTpDesc Or Len(mTpForma) = 0 Then
+        ' Monta " PALAVRA PALAVRA " 1 vez por descricao, num buffer de tamanho
+        ' fixo (Mid$ no lugar de concatenar caractere a caractere)
+        Dim s As String, i As Long, ch As String
+        s = Space$(Len(descNorm) + 2)
+        For i = 1 To Len(descNorm)
+            ch = Mid$(descNorm, i, 1)
+            If (ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Then Mid$(s, i + 1, 1) = ch
+        Next i
+        mTpDesc = descNorm : mTpForma = s
+    End If
+    TemPalavra = (InStr(mTpForma, " " & termo & " ") > 0)
 End Function
+
+' Area de dados da base (linha 2 ate lastR, coluna 1 ate lastC) como array.
+' Le a planilha so na 1a chamada da execucao; as etapas seguintes recebem uma
+' copia em memoria (bem mais rapido que reler a aba). A base nao e alterada
+' durante a execucao; LiberarBaseArr zera o cache no inicio e no fim.
+Private Function LerBaseArr(ByVal ws As Worksheet, ByVal lastR As Long, ByVal lastC As Long) As Variant
+    Dim chave As String
+    chave = ws.Parent.Name & "|" & ws.Name & "|" & lastR & "|" & lastC
+    If chave <> mBaseChave Then
+        mBaseArr = ws.Range(ws.Cells(2, 1), ws.Cells(lastR, lastC)).Value
+        mBaseChave = chave
+    End If
+    LerBaseArr = mBaseArr
+End Function
+
+Private Sub LiberarBaseArr()
+    mBaseArr = Empty : mBaseChave = ""
+End Sub
 
 ' Fallback de classificacao por DESCRICAO quando o codigo SAP nao esta no mapa NT.006.
 ' Baseado na padronizacao de estruturas de distribuicao 15kV (NT.006 / NT.018 Equatorial
@@ -1458,7 +1488,7 @@ Private Function MediaPuODI(ByVal wsBase As Worksheet) As Object
     Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, iP4).End(xlUp).Row
     If lastR < 2 Then Exit Function
-    Dim d As Variant : d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+    Dim d As Variant : d = LerBaseArr(wsBase, lastR, lastC)
     Dim nC As Object : Set nC = CreateObject("Scripting.Dictionary")
     Dim i As Long, p4 As String, tpp As String, cod As String, q As Double, pu As Double
     For i = 1 To UBound(d, 1)
@@ -1714,7 +1744,7 @@ Private Sub ProcessarCOMInventario(wsBase As Worksheet, wsCom As Worksheet)
     lastRow = wsBase.Cells(wsBase.Rows.Count, colPEP4).End(xlUp).Row
 
     Dim d As Variant
-    d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastRow, lastC)).Value
+    d = LerBaseArr(wsBase, lastRow, lastC)
     Dim nRows As Long : nRows = lastRow - 1
 
     Dim r As Long
@@ -2130,7 +2160,7 @@ Private Sub ProcessarAlertaCritico(wsBase As Worksheet, ws As Worksheet)
     If lastRow < 2 Then GoTo Finaliza2
 
     Dim d As Variant
-    d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastRow, lastC)).Value
+    d = LerBaseArr(wsBase, lastRow, lastC)
     Dim n As Long : n = lastRow - 1
     mStep = "ALERTA CRITICO (regras por linha)"
 
@@ -3008,7 +3038,7 @@ Private Sub ProcessarPrecoUnitario(wsBase As Worksheet, ws As Worksheet)
     Dim nOut As Long : nOut = 0
     Dim stArr() As String
     If lastR >= 2 Then
-        Dim d As Variant : d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+        Dim d As Variant : d = LerBaseArr(wsBase, lastR, lastC)
         ' Saida bufferizada: monta as linhas em array e escreve UMA vez no final
         Dim outA() As Variant : ReDim outA(1 To UBound(d, 1), 1 To 14)
         ReDim stArr(1 To UBound(d, 1))
@@ -3703,7 +3733,7 @@ Private Function DiscrepValorODI(ByVal wsBase As Worksheet, ByVal tol As Double)
     Dim lastC As Long : lastC = wsBase.Cells(1, wsBase.Columns.Count).End(xlToLeft).Column
     Dim lastR As Long : lastR = wsBase.Cells(wsBase.Rows.Count, iP4).End(xlUp).Row
     If lastR < 2 Then Exit Function
-    Dim d As Variant : d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+    Dim d As Variant : d = LerBaseArr(wsBase, lastR, lastC)
     Dim n As Long : n = UBound(d, 1)
 
     ' 1a passada: PU de cada linha ODI valida e soma/contagem por codigo
@@ -5927,7 +5957,7 @@ Private Sub ProcessarDiagnosticoBase(wsBase As Worksheet, wb As Workbook)
     Dim n As Long : n = 0
     Dim d As Variant
     If lastR >= 2 Then
-        d = wsBase.Range(wsBase.Cells(2, 1), wsBase.Cells(lastR, lastC)).Value
+        d = LerBaseArr(wsBase, lastR, lastC)
         n = lastR - 1
     End If
 
@@ -6717,6 +6747,11 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "EhMedidorODM MEDIDOR ELETRONICO = medidor", (EhMedidorODM(NormStr("MEDIDOR ELETRONICO") & " MEDIDOR") = True)
     RegTest nomes, oks, det, cnt, "EhMedidorODM LACRE P/ MEDIDOR = nao e medidor", (EhMedidorODM(NormStr("LACRE P/ MEDIDOR") & " LACRE") = False)
     RegTest nomes, oks, det, cnt, "EhMedidorODM CAIXA PARA MEDIDOR = nao e medidor", (EhMedidorODM(NormStr("CAIXA PARA MEDIDOR") & " CAIXA MEDICAO") = False)
+    RegTest nomes, oks, det, cnt, "TemPalavra PINO,ISOL (virgula separa) = True", (TemPalavra("PINO,ISOL", "PINO") = True)
+    RegTest nomes, oks, det, cnt, "TemPalavra PAINEL nao contem ANEL = False", (TemPalavra("PAINEL ELETRICO", "ANEL") = False)
+    RegTest nomes, oks, det, cnt, "TemPalavra troca de descricao (cache) = True", (TemPalavra("ANEL DE AMARRACAO", "ANEL") = True)
+    RegTest nomes, oks, det, cnt, "TemPalavra volta p/ descricao anterior = False", (TemPalavra("PAINEL ELETRICO", "ANEL") = False)
+    RegTest nomes, oks, det, cnt, "TemPalavra descricao vazia = False", (TemPalavra("", "ANEL") = False)
 
     Dim ws As Worksheet
     On Error Resume Next
