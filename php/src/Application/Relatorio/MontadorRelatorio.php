@@ -12,6 +12,7 @@ use Inventario\Domain\Analise\Resumo\ResumoObra;
 use Inventario\Domain\Analise\SapPrj\LinhaAnalise;
 use Inventario\Domain\Diagnostico\Verificacao;
 use Inventario\Domain\Historico\RegistroObra;
+use Inventario\Domain\Preco\LinhaDiscrepanciaValor;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
 use Inventario\Domain\Ranking\ObraRisco;
 use Inventario\Domain\Ranking\PepSemBaixa;
@@ -176,6 +177,8 @@ final class MontadorRelatorio
         $rk = $c->ranking;
         $obras = $rk?->obras ?? [];
         $sem = $rk?->semBaixa ?? [];
+        $dv = $c->discrepanciaValor;
+        $tol = Formatador::pct($c->parametros->numero('DISCREP_VALOR_PCT'));
 
         return new Aba('RANKING DE RISCO', 'RANKING DE RISCO POR OBRA  -  por onde comecar a auditoria', count($obras) . ' obras', [
             self::bloco('', ['#', 'PEP3NIVEL', 'VALOR OBRA', 'SITUACAO', 'ALERTAS', 'DIVERG PRECO', 'SOBREPRECO R$', 'COM FORA NT.006', 'SCORE', 'RISCO', 'DIAGNOSTICO'],
@@ -187,6 +190,16 @@ final class MontadorRelatorio
                 ['NIVEL', 'PEP', 'VALOR', 'SITUACAO', 'ITENS', 'MAT LIB SAP', 'TIPO OD', 'PEP3 DO PEP4', 'OBSERVACAO'],
                 array_map(static fn (PepSemBaixa $p): array => array_values($p->paraArray()), $sem),
                 0, Paleta::SEM_BAIXA, [2, 5], 'Todos os PEP3 e PEP4 tem ao menos um material baixado em MAT PRJ CAD.'),
+            self::bloco(
+                "DISCREPANCIA DE VALOR DE MATERIAL (ODI)  -  PU fora de +/-{$tol} da media do codigo   -   " . count($dv) . ' item(ns)',
+                ['PEP3NIVEL', 'PEP4NIVEL', 'COD MAT', 'DESC MAT', 'QTD', 'VALOR', 'PU (VALOR/QTD)', 'MEDIA PU DO COD', 'DESVIO', 'SITUACAO', 'OBSERVACAO'],
+                array_map(static function (LinhaDiscrepanciaValor $d): array {
+                    $l = array_values($d->paraArray());
+                    $l[8] = ($d->desvio >= 0 ? '+' : '-') . Formatador::pct(abs($d->desvio), 1);
+
+                    return $l;
+                }, $dv),
+                9, Paleta::DISCREP_VALOR, [4, 5, 6, 7], "Nenhum material de ODI com valor fora de +/-{$tol} da media do codigo."),
         ], 'C00000', [7, 26, 14, 13, 9, 13, 14, 15, 8, 9, 70]);
     }
 

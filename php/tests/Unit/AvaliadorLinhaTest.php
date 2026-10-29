@@ -28,6 +28,18 @@ final class AvaliadorLinhaTest extends TestCase
         self::assertTrue($av->avaliavel);
     }
 
+    public function testOddComValorExcessivoReprova(): void
+    {
+        $av = $this->a->avaliar('UC', 'PARAFUSO', -1, -1, 'ADERENTE', false, TipoOD::ODD, -50, mediaOdi: 100.0);
+        self::assertFalse($av->ehAderente);
+        self::assertTrue($av->reprovaLinha);
+        self::assertStringContainsString('acima de 30% do valor do material', $av->motivoOD);
+
+        $ok = $this->a->avaliar('UC', 'PARAFUSO', -1, -1, 'ADERENTE', false, TipoOD::ODD, -20, mediaOdi: 100.0);
+        self::assertTrue($ok->ehAderente);
+        self::assertFalse($ok->reprovaLinha);
+    }
+
     public function testUcZeradoComObraTodaZerada(): void
     {
         $av = $this->a->avaliar('UC', 'PARAFUSO', 0, 0, 'NULO', true);
@@ -58,11 +70,13 @@ final class AvaliadorLinhaTest extends TestCase
         self::assertTrue($av->ehAderente);
     }
 
-    public function testOddValorAbaixoDoLimite(): void
+    public function testOddComValorTotalAltoEPuNormalNaoReprova(): void
     {
-        $av = $this->a->avaliar('UC', 'PARAFUSO', -5, -5, 'ADERENTE', false, TipoOD::ODD, -150);
-        self::assertTrue($av->violaOD);
-        self::assertTrue($av->reprovaLinha);
+        // 167,19 kg de cabo a R$ 5,00/kg: so a regra dos 30% julga o valor na ODD
+        $av = $this->a->avaliar('UC', 'COND NU', -167.19, -167.19, 'ADERENTE', false, TipoOD::ODD, -835.95);
+        self::assertFalse($av->violaOD);
+        self::assertTrue($av->ehAderente);
+        self::assertFalse($av->reprovaLinha);
     }
 
     public function testSinalPelaQuantidadeDaPropriaLinha(): void

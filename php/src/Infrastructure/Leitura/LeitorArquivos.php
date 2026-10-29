@@ -19,7 +19,7 @@ final class LeitorArquivos implements LeitorPlanilhas
 
     public static function padrao(): self
     {
-        return new self([new LeitorExcel(), new LeitorCsv()]);
+        return new self([new LeitorXlsx(), new LeitorExcel(), new LeitorCsv()]);
     }
 
     /**

@@ -56,6 +56,19 @@ final class EquivalenciaTest extends TestCase
         self::assertSame($c->grupo('105310001'), $c->grupo('105310005'), '6 + 21 + 23');
     }
 
+    public function testGruposDaVersao5(): void
+    {
+        $c = new CatalogoEquivalencias(ListaPadraoEquivalencias::itens());
+        self::assertSame($c->grupo('102110178'), $c->grupo('102110181'));
+        self::assertSame($c->grupo('133000127'), $c->grupo('133000041'));
+        self::assertSame($c->grupo('102100064'), $c->grupo('102100373'));
+        self::assertSame($c->grupo('122120033'), $c->grupo('122120006'));
+        // 122120026 e 122120003 ja estavam no grupo 22: 22 + 37 + 41 formam um grupo so
+        self::assertSame($c->grupo('122120026'), $c->grupo('122120028'));
+        self::assertSame($c->grupo('122120003'), $c->grupo('122120028'));
+        self::assertNotSame($c->grupo('122120033'), $c->grupo('122120026'));
+    }
+
     public function testChaveDaLinha(): void
     {
         $c = new CatalogoEquivalencias([new ItemEquivalencia('105010022', '3'), new ItemEquivalencia('105010003', '3')]);

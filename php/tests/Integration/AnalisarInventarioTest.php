@@ -88,9 +88,11 @@ final class AnalisarInventarioTest extends TestCase
         $arrastado = self::linhas($c, 'OBRA-002.01.I', '105300003')[0];
         self::assertStringStartsWith('Arrastado pela reprovacao do PEP3', $arrastado->motivo);
 
-        // ODD: sinal e valor abaixo do limite
+        // ODD: valor alto sozinho nao reprova (so a regra dos 30% da media ODI, e
+        // este trafo nao aparece em ODI); a obra cai pelo poste com sinal errado
         $odd = self::linhas($c, 'OBRA-003.01.D', '102100160')[0];
-        self::assertStringContainsString('abaixo do limite de R$ -100,00', $odd->motivo);
+        self::assertSame('ADERENTE', $odd->sitMat);
+        self::assertStringStartsWith('Arrastado pela reprovacao do PEP3', $odd->motivo);
 
         // cabo isolado de 100 m nao e isento (so abaixo de 15 m)
         self::assertSame(Aprovacao::APROVADO, self::linhas($c, 'OBRA-005.01.I', '122000001')[0]->aprovacao);
@@ -126,7 +128,7 @@ final class AnalisarInventarioTest extends TestCase
         $c = $this->analisar();
         $tipos = array_map(static fn ($a) => $a->tipo, $c->alertas()->alertas());
         foreach (['ODI SEM UC', 'ODI SEM COM', 'PU BAIXO EM ODI', 'PU 0,01 EM CABO/COND', 'MATERIAL POSITIVO EM ODD',
-            'ODD VALOR ABAIXO DO LIMITE', 'POSTE EM PEP .M', 'POSTE EM PEP .S', 'POSTE ODI PU BAIXO', 'LACRE x MEDIDOR',
+            'POSTE EM PEP .M', 'POSTE EM PEP .S', 'POSTE ODI PU BAIXO', 'LACRE x MEDIDOR',
             'QUALIDADE DA BASE'] as $t) {
             self::assertContains($t, $tipos);
         }
@@ -140,8 +142,8 @@ final class AnalisarInventarioTest extends TestCase
         $c = $this->analisar();
         $rk = $c->ranking;
         self::assertNotNull($rk);
-        self::assertSame('OBRA-003', $rk->obras[0]->pep3);
-        self::assertSame(52.0, $rk->obras[0]->score);
+        self::assertSame('OBRA-006', $rk->obras[0]->pep3);
+        self::assertSame(48.0, $rk->obras[0]->score);
         self::assertSame(['OBRA-006', 'OBRA-007'], array_map(static fn ($p) => $p->pep, $rk->semBaixa));
         self::assertStringContainsString('SAP liberou 1 - material sem projeto', $rk->semBaixa[0]->observacao);
     }

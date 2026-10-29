@@ -50,6 +50,30 @@ com a data) e os avisos não fatais. Se algo falhou, o subtítulo do painel most
 pelo modo "separar". O DIAGNÓSTICO BASE confere a idade da base de preços (limite
 `PRECOS_MAX_DIAS` na CONFIG, padrão 90 dias).
 
+## Discrepância de valor de material (ODI)
+
+Na aba **RANKING DE RISCO**, a seção "DISCREPANCIA DE VALOR DE MATERIAL (ODI)" compara o
+preço unitário (VALOR / MAT LIB SAP) de cada linha de PEP **ODI** com a **média do mesmo
+código** em todas as linhas ODI da base. Fora de ±30% (parâmetro `DISCREP_VALOR_PCT` na
+CONFIG) é discrepância, acima ou abaixo da média. Código com um único lançamento em ODI não
+tem com o que ser comparado e fica de fora. A contagem entra no DIAGNÓSTICO da obra e no
+SCORE do ranking: 2 pontos por discrepância, até 12 (`PESO_DISCREP` e `CAP_DISCREP` na CONFIG).
+
+Cada linha discrepante também aparece na aba **ALERTA CRITICO** como `PU DISCREPANTE DA
+MEDIA` (REFERENCIA = média do código). É só alerta: não reprova a obra e não soma de novo
+no score como alerta crítico, porque já conta como discrepância.
+
+## Valor excessivo em ODD
+
+Na ANALISE SAP x PRJ, cada linha de PEP **ODD** (desmonte) tem o preço unitário
+(|VALOR| / |MAT LIB SAP|) comparado com o **valor do material**: o preço unitário médio do
+mesmo código nas linhas **ODI** da base. Acima de **30%** desse valor (parâmetro
+`ODD_VALOR_MAX_PCT` na CONFIG) o item fica **NÃO ADERENTE** e a obra é **reprovada**; o
+limite exato (30,0%) passa. Código que não aparece em ODI fica sem comparação. Cada caso
+também vira o alerta `ODD VALOR EXCESSIVO` na aba ALERTA CRITICO. É a única regra de valor
+da ODD: o antigo limite fixo de R$ -100 no total da linha (`ODD_VALOR_MIN`) foi retirado,
+porque reprovava materiais de quantidade grande (cabo em kg, por exemplo) com preço normal.
+
 ## Abas persistentes
 
 A macro apaga e recria as abas de análise a cada execução, mas estas **não** entram
@@ -67,7 +91,7 @@ nessa lista e acumulam histórico entre rodadas:
   for o mesmo número no SAP e no PRJ (sem tolerância, em qualquer família): SAP 3
   num código e PRJ 9 no outro = NÃO ADERENTE; 9 x 10 também. Cada linha mantém o próprio código e descrição; o MOTIVO cita
   os dois e o total. Um código em dois grupos une os grupos.
-  Nasce com a lista padrão da área (grupos 1–34, sem o 10 e o 28, que repetiam o 8
+  Nasce com a lista padrão da área (grupos 1–34 e 36–41, sem o 10 e o 28, que repetiam o 8
   e o 24) e o grupo 35 (`105300003` = `105300005`, que muda de número quando a área
   passa a usar o dele). A aba é do usuário: a macro só acrescenta
   grupos de versões novas da lista padrão (versão guardada no nome oculto

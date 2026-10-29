@@ -16,8 +16,9 @@ final class ExportadorJson implements Exportador
 
     public function exportar(Relatorio $r, string $caminho): string
     {
+        // sem JSON_PRETTY_PRINT: os recuos dobravam o arquivo (74 MB em 30 mil linhas)
         file_put_contents($caminho, json_encode(self::paraArray($r),
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION));
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE));
 
         return $caminho;
     }
