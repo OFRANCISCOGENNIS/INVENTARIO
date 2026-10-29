@@ -13,11 +13,13 @@ use Inventario\Domain\Alerta\Regra\PepSemUc;
 use Inventario\Domain\Alerta\Regra\PosteEmPepMS;
 use Inventario\Domain\Alerta\Regra\PosteOdiPuBaixo;
 use Inventario\Domain\Alerta\Regra\PuBaixoEmOdi;
+use Inventario\Domain\Alerta\Regra\PuDiscrepanteMedia;
 use Inventario\Domain\Alerta\Regra\PuSimbolicoCabo;
 use Inventario\Domain\Alerta\Regra\SinalPorTipoOD;
 use Inventario\Domain\Alerta\Regra\UcPrecoReferencia;
 use Inventario\Domain\Base\BaseInventario;
 use Inventario\Domain\Config\Parametros;
+use Inventario\Domain\Preco\LinhaDiscrepanciaValor;
 use Inventario\Domain\Preco\LinhaPrecoUnitario;
 use Inventario\Domain\Preco\PrecosReferencia;
 
@@ -43,8 +45,15 @@ final class GeradorAlertas
     /**
      * @param list<LinhaPrecoUnitario> $precoUnitario
      * @param array<string, float> $mediasOdi codigo => PU medio na ODI (ODD VALOR EXCESSIVO)
+     * @param list<LinhaDiscrepanciaValor> $discrepancias linhas ODI fora da media do codigo
      */
-    public static function padrao(Parametros $p, PrecosReferencia $precos, array $precoUnitario, array $mediasOdi = []): self
+    public static function padrao(
+        Parametros $p,
+        PrecosReferencia $precos,
+        array $precoUnitario,
+        array $mediasOdi = [],
+        array $discrepancias = [],
+    ): self
     {
         return new self(
             [new OdiSemUcSemCom(), new PepSemUc()],
@@ -59,7 +68,7 @@ final class GeradorAlertas
                 new PuSimbolicoCabo($p->numero('PU_CABO_ALERTA')),
                 new UcPrecoReferencia($precos, $p->numero('TOL_SUBVAL'), $p->numero('MIN_DIVERG_RS')),
             ],
-            [new LacreMedidor(), new DivergenciaPrecoUnitario($precoUnitario)],
+            [new LacreMedidor(), new DivergenciaPrecoUnitario($precoUnitario), new PuDiscrepanteMedia($discrepancias)],
         );
     }
 

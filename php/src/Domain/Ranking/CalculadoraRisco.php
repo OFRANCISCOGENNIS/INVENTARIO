@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Inventario\Domain\Ranking;
 
+use Inventario\Domain\Alerta\Regra\PuDiscrepanteMedia;
 use Inventario\Domain\Alerta\ResultadoAlertas;
 use Inventario\Domain\Analise\Racionalizacao\LinhaRacionalizacao;
 use Inventario\Domain\Analise\SapPrj\ResultadoSapPrj;
@@ -70,7 +71,8 @@ final class CalculadoraRisco
         }
         foreach ($alertas->alertas() as $a) {
             $p3 = trim($a->pep3);
-            if ($p3 !== '') {
+            // PU DISCREPANTE DA MEDIA ja pesa como discrepancia de valor (PESO_DISCREP)
+            if ($p3 !== '' && $a->tipo !== PuDiscrepanteMedia::TIPO) {
                 $al[$p3] = ($al[$p3] ?? 0) + 1;
                 $val[$p3] ??= 0.0;
             }

@@ -47,6 +47,11 @@ Private mAlCap As Long
 ' recriadas a cada rodada, senao o historico se perderia.
 Private Const ABA_KPI As String = "HISTORICO KPI"
 
+' Alerta da ALERTA CRITICO para linha ODI com PU fora da media do codigo. Ja
+' pesa no RANKING como discrepancia de valor (PESO_DISCREP), por isso nao entra
+' tambem na contagem de alertas criticos do score.
+Private Const ALERTA_DISCREP As String = "PU DISCREPANTE DA MEDIA"
+
 ' Versao da lista padrao de materiais equivalentes. A aba EQUIVALENCIAS guarda
 ' (no nome oculto EQUIV_VERSAO) a versao que ja recebeu; so os grupos de
 ' versoes mais novas sao acrescentados, sem reinserir o que o usuario apagou.
@@ -2528,6 +2533,25 @@ ProxLinha2:
         End If
     End If
 
+    ' --- PU discrepante da media do codigo na ODI (+/- DISCREP_VALOR_PCT) ---
+    mStep = "ALERTA CRITICO (PU discrepante da media)"
+    Dim dvAl As Collection, itDv As Variant
+    Set dvAl = DiscrepValorODI(wsBase, CfgD("DISCREP_VALOR_PCT", 0.3))
+    For Each itDv In dvAl
+        AlertaCel outRow, 1, ALERTA_DISCREP
+        AlertaCel outRow, 2, itDv(0)    ' PEP3
+        AlertaCel outRow, 3, itDv(1)    ' PEP4
+        AlertaCel outRow, 4, itDv(2)    ' COD
+        AlertaCel outRow, 5, itDv(3)    ' DESC
+        AlertaCel outRow, 6, "ODI"
+        AlertaCel outRow, 7, itDv(5)    ' VALOR
+        AlertaCel outRow, 8, itDv(4)    ' QTD
+        AlertaCel outRow, 9, itDv(6)    ' PU
+        AlertaCel outRow, 10, itDv(7)   ' REFERENCIA = media do codigo
+        AlertaCel outRow, 11, ObsDiscrepValor(itDv)
+        outRow = outRow + 1
+    Next itDv
+
 Finaliza2:
     mStep = "ALERTA CRITICO (montagem da aba)"
     Dim totAl As Long : totAl = outRow - 2
@@ -2729,6 +2753,7 @@ Private Sub CoresAlerta(ByVal tipo As String, ByRef bgA As Long, ByRef chip As L
         Case "ODD VALOR EXCESSIVO":        bgA = RGB(252, 226, 228) : chip = RGB(185, 28, 28)
         Case "POSTE ODI PU BAIXO":        bgA = RGB(224, 231, 255) : chip = RGB(55, 48, 163)
         Case "MEDIDOR EM PEP ODI":        bgA = RGB(237, 233, 254) : chip = RGB(109, 40, 217)
+        Case ALERTA_DISCREP:              bgA = RGB(255, 244, 214) : chip = RGB(161, 98, 7)
         Case Else:                        bgA = RGB(245, 245, 245) : chip = RGB(120, 120, 120)
     End Select
 End Sub
@@ -3251,6 +3276,8 @@ Private Sub ProcessarRankingRisco(wb As Workbook, wsDet As Worksheet, _
         Dim aa As Variant : aa = wsAlertaC.Range(wsAlertaC.Cells(r0A, 1), wsAlertaC.Cells(lastA, 2)).Value
         For r = 1 To UBound(aa, 1)
             p3 = Trim(CStr(aa(r, 2)))
+            ' PU DISCREPANTE DA MEDIA ja pesa como discrepancia de valor (passo 5)
+            If CStr(aa(r, 1)) = ALERTA_DISCREP Then p3 = ""
             If p3 <> "" Then
                 If alOb.Exists(p3) Then alOb(p3) = alOb(p3) + 1 Else alOb.Add p3, 1
                 If Not valOb.Exists(p3) Then valOb.Add p3, 0#
@@ -3713,6 +3740,16 @@ Private Function EhDiscrepValor(ByVal pu As Double, ByVal media As Double, _
     EhDiscrepValor = (Abs(DesvioMedia(pu, media)) > tol + 0.000000001)
 End Function
 
+' Texto da discrepancia de valor (RANKING 3a secao e ALERTA CRITICO). it = item
+' de DiscrepValorODI: Array(PEP3, PEP4, COD, DESC, QTD, VALOR, PU, MEDIA, DESVIO, N).
+Private Function ObsDiscrepValor(ByVal it As Variant) As String
+    Dim acima As Boolean : acima = (CDbl(it(8)) > 0)
+    ObsDiscrepValor = "Discrepancia de valor de material: PU R$ " & Format(it(6), "#,##0.00") & _
+                      " esta " & Format(Abs(CDbl(it(8))), "0.0%") & IIf(acima, " acima", " abaixo") & _
+                      " da media do codigo (R$ " & Format(it(7), "#,##0.00") & " em " & it(9) & _
+                      " lancamentos ODI)"
+End Function
+
 ' Linhas ODI com PU discrepante, da maior para a menor diferenca. Cada item:
 ' Array(PEP3, PEP4, COD, DESC, QTD, VALOR, PU, MEDIA, DESVIO, N LANCAMENTOS).
 Private Function DiscrepValorODI(ByVal wsBase As Worksheet, ByVal tol As Double) As Collection
@@ -3890,10 +3927,7 @@ Private Sub SecaoDiscrepValor(ws As Worksheet, ByVal r0 As Long, itens As Collec
         outD(i, 5) = it(4) : outD(i, 6) = it(5) : outD(i, 7) = it(6) : outD(i, 8) = it(7)
         outD(i, 9) = it(8)
         outD(i, 10) = IIf(acima, "ACIMA DA MEDIA", "ABAIXO DA MEDIA")
-        outD(i, 11) = "Discrepancia de valor de material: PU R$ " & Format(it(6), "#,##0.00") & _
-                      " esta " & Format(Abs(CDbl(it(8))), "0.0%") & IIf(acima, " acima", " abaixo") & _
-                      " da media do codigo (R$ " & Format(it(7), "#,##0.00") & " em " & it(9) & _
-                      " lancamentos ODI)"
+        outD(i, 11) = ObsDiscrepValor(it)
     Next i
     Dim rI As Long : rI = r0 + 2
     Dim rF As Long : rF = r0 + 1 + n
@@ -6752,6 +6786,10 @@ Public Sub TestarLogicaInventario()
     RegTest nomes, oks, det, cnt, "TemPalavra troca de descricao (cache) = True", (TemPalavra("ANEL DE AMARRACAO", "ANEL") = True)
     RegTest nomes, oks, det, cnt, "TemPalavra volta p/ descricao anterior = False", (TemPalavra("PAINEL ELETRICO", "ANEL") = False)
     RegTest nomes, oks, det, cnt, "TemPalavra descricao vazia = False", (TemPalavra("", "ANEL") = False)
+    Dim itDvT As Variant : itDvT = Array("OB-2", "OB-2.01.I", "1", "PARAFUSO", 10, 1600, 160, 120, 1 / 3, 3)
+    RegTest nomes, oks, det, cnt, "ObsDiscrepValor PU 160 x media 120 = acima", (InStr(ObsDiscrepValor(itDvT), " acima da media do codigo") > 0)
+    itDvT(6) = 80 : itDvT(8) = -1 / 3
+    RegTest nomes, oks, det, cnt, "ObsDiscrepValor PU 80 x media 120 = abaixo", (InStr(ObsDiscrepValor(itDvT), " abaixo da media do codigo") > 0)
 
     Dim ws As Worksheet
     On Error Resume Next

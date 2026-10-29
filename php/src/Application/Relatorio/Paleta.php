@@ -32,6 +32,7 @@ final class Paleta
         'PU BAIXO EM ODI' => ['FCE7F3', 'BE185D'],
         'PU 0,01 EM CABO/COND' => ['FFEDD5', 'C2410C'],
         'ODD VALOR EXCESSIVO' => ['FCE2E4', 'B91C1C'],
+        'PU DISCREPANTE DA MEDIA' => ['FFF4D6', 'A16207'],
         'POSTE ODI PU BAIXO' => ['E0E7FF', '3730A3'],
         'MEDIDOR EM PEP ODI' => ['EDE9FE', '6D28D9'],
         'QUALIDADE DA BASE - CRITICO' => ['FCE2E4', 'C00000'],

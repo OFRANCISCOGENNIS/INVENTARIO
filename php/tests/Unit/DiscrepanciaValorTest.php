@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Inventario\Tests\Unit;
 
+use Inventario\Domain\Alerta\Regra\PuDiscrepanteMedia;
 use Inventario\Domain\Alerta\ResultadoAlertas;
 use Inventario\Domain\Analise\SapPrj\ResultadoSapPrj;
 use Inventario\Domain\Base\BaseInventario;
@@ -86,6 +87,39 @@ final class DiscrepanciaValorTest extends TestCase
         $rk = (new CalculadoraRisco(new Parametros()))->calcular(
             new ResultadoSapPrj([], 0, 0, 0, 0.0, 0.0), new ResultadoAlertas([]), [], [], $muitas);
         self::assertSame(12.0, $rk->obras[0]->score, 'teto CAP_DISCREP');
+    }
+
+    public function testViraAlertaPuDiscrepanteDaMedia(): void
+    {
+        $base = self::base([
+            ['OB-1', 'OB-1.01.I', '1', 'PARAFUSO', 1000, 10],
+            ['OB-1', 'OB-1.02.I', '1', 'PARAFUSO', 500, 5],
+            ['OB-2', 'OB-2.01.I', '1', 'PARAFUSO', 1600, 10],
+        ]);
+        $al = (new PuDiscrepanteMedia((new DiscrepanciaValor(0.3))->analisar($base)))->gerar([]);
+
+        self::assertCount(1, $al, 'so a linha de PU 160 (33,3% acima da media 120)');
+        $a = $al[0]->comPrecoRecalculado();
+        self::assertSame('PU DISCREPANTE DA MEDIA', $a->tipo);
+        self::assertSame(['OB-2', 'OB-2.01.I', '1', 'ODI'], [$a->pep3, $a->pep4, $a->codigo, $a->familia]);
+        self::assertEqualsWithDelta(160.0, $a->precoUnitario, 1e-9);
+        self::assertEqualsWithDelta(120.0, $a->referencia, 1e-9, 'referencia = media do codigo');
+        self::assertStringContainsString('33,3% acima da media do codigo', $a->motivo);
+    }
+
+    public function testAlertaNaoContaDuasVezesNoScore(): void
+    {
+        $base = self::base([
+            ['OB-1', 'OB-1.01.I', '3', 'PORCA', 30, 1],
+            ['OB-1', 'OB-1.02.I', '3', 'PORCA', 10, 1],
+        ]);
+        $dv = (new DiscrepanciaValor(0.3))->analisar($base);
+        $al = new ResultadoAlertas((new PuDiscrepanteMedia($dv))->gerar([]));
+        $rk = (new CalculadoraRisco(new Parametros()))->calcular(
+            new ResultadoSapPrj([], 0, 0, 0, 0.0, 0.0), $al, [], [], $dv);
+
+        self::assertSame(4.0, $rk->obras[0]->score, 'so as 2 discrepancias x peso 2; o alerta nao soma PESO_ALERTA');
+        self::assertSame(0, $rk->obras[0]->alertas);
     }
 
     /** @param list<array{0: string, 1: string, 2: string, 3: string, 4: float|int, 5: float|int}> $linhas */

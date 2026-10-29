@@ -26,7 +26,10 @@ final class EtapaAlertas implements Etapa
             : PrecosReferencia::dePontoMedio($ctx->tabelaPrecos ?? TabelaPrecos::semFonte('NENHUMA'));
         $ctx->saude->definirFonteReferencia($ref->fonte);
 
+        // linhas ODI com PU fora da media do codigo: viram alerta aqui e a 3a secao do ranking
+        $ctx->discrepanciaValor = (new DiscrepanciaValor($ctx->parametros->numero('DISCREP_VALOR_PCT')))
+            ->analisar($ctx->base);
         $ctx->alertas = GeradorAlertas::padrao($ctx->parametros, $ref, $ctx->precoUnitario,
-            DiscrepanciaValor::mediasOdi($ctx->base))->gerar($ctx->base);
+            DiscrepanciaValor::mediasOdi($ctx->base), $ctx->discrepanciaValor)->gerar($ctx->base);
     }
 }

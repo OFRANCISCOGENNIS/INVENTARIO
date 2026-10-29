@@ -59,6 +59,10 @@ CONFIG) é discrepância, acima ou abaixo da média. Código com um único lanç
 tem com o que ser comparado e fica de fora. A contagem entra no DIAGNÓSTICO da obra e no
 SCORE do ranking: 2 pontos por discrepância, até 12 (`PESO_DISCREP` e `CAP_DISCREP` na CONFIG).
 
+Cada linha discrepante também aparece na aba **ALERTA CRITICO** como `PU DISCREPANTE DA
+MEDIA` (REFERENCIA = média do código). É só alerta: não reprova a obra e não soma de novo
+no score como alerta crítico, porque já conta como discrepância.
+
 ## Valor excessivo em ODD
 
 Na ANALISE SAP x PRJ, cada linha de PEP **ODD** (desmonte) tem o preço unitário
